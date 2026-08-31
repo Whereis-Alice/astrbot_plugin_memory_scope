@@ -2,12 +2,38 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Iterable
 
 BYTES_PER_MB = 1024 * 1024
+
+
+async def wait_until_loaded(event: asyncio.Event, timeout: float) -> bool:
+    """Wait for the "AstrBot finished loading" signal without waiting forever.
+
+    ``on_astrbot_loaded`` is dispatched exactly once per process, from
+    ``CoreLifecycle.start()``.  A plugin that is installed, enabled or reloaded
+    from the Dashboard therefore never sees that hook, so an unbounded
+    ``event.wait()`` would keep the sampler blocked for the rest of the process
+    lifetime: no history, no trend, no alerts and no persistence.
+
+    Returns ``True`` when the event was set, or when ``timeout`` is not positive
+    (which means "wait as long as it takes").  Returns ``False`` when the
+    deadline expired first; the timeout is reported rather than raised because
+    the caller treats it as "assume a runtime install and start sampling".
+    """
+
+    if not timeout or timeout <= 0:
+        await event.wait()
+        return True
+    try:
+        await asyncio.wait_for(event.wait(), timeout)
+    except asyncio.TimeoutError:
+        return False
+    return True
 
 
 @dataclass(slots=True)

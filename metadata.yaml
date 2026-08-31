@@ -3,5 +3,5 @@ display_name: MemoryScope
 desc: AstrBot 插件内存占用分析：基于 tracemalloc 的按插件归因、引用图保留量（独占/共享）深度扫描、进程级 RSS 与 GC 指标、采样趋势、基线对比与泄漏告警；内置 Dashboard 页面，命令入口 /mem。
 author: Whereis-Alice
 repo: "https://github.com/Whereis-Alice/astrbot_plugin_memory_scope"
-version: 1.0.2
+version: 1.0.3
 astrbot_version: ">=4.16,<5"

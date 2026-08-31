@@ -160,7 +160,9 @@ class MemoryScopeWebApi:
                 },
                 "history": {
                     "samples": self.collector.history.count(),
-            "traced_samples": len(self.collector.history.traced_samples()),
+                    "traced_samples": len(
+                        self.collector.history.traced_samples(),
+                    ),
                     "baseline_at": (
                         self.collector.history.baseline.ts
                         if self.collector.history.baseline

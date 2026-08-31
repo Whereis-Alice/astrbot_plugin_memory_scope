@@ -21,6 +21,7 @@ from .core.collector import (
     autostart_memory_block_reason,
     available_memory_mb,
 )
+from .core.sampler import wait_until_loaded
 from .core.text_report import (
     format_bytes,
     render_gc,
@@ -30,7 +31,7 @@ from .core.text_report import (
 from .core.web_api import MemoryScopeWebApi
 
 PLUGIN_ID = "astrbot_plugin_memory_scope"
-PLUGIN_VERSION = "1.0.2"
+PLUGIN_VERSION = "1.0.3"
 # Key used with the plugin KV store so history survives a reload.
 HISTORY_KEY = "history"
 # Flush the ring buffer to the KV store every N samples instead of every sample.
@@ -40,6 +41,11 @@ PERSIST_KEEP = 240
 # plugin, never during the import phase: a tracemalloc snapshot competes with
 # the imports for both CPU and RAM.
 FIRST_SAMPLE_DELAY_SECONDS = 8.0
+# on_astrbot_loaded is dispatched once per process, from CoreLifecycle.start().
+# A plugin installed, enabled or reloaded from the Dashboard never receives it,
+# so the sampler waits at most this long before assuming the import phase is
+# long over and it is safe to start sampling.
+LOADED_WAIT_TIMEOUT_SECONDS = 180.0
 # When one sample costs more than this share of the interval, the loop backs off.
 SAMPLE_COST_RATIO = 0.2
 MAX_INTERVAL_MULTIPLIER = 8
@@ -196,9 +202,28 @@ class MemoryScopePlugin(Star):
     # sampling loop
     # ------------------------------------------------------------------
     async def _sampler_loop(self) -> None:
-        # Block until every plugin is loaded, otherwise the first snapshot lands
-        # in the middle of the import storm it is meant to observe.
-        await self._loaded_event.wait()
+        # Wait for every plugin to finish loading, otherwise the first snapshot
+        # lands in the middle of the import storm it is meant to observe.  The
+        # wait is bounded because the hook that sets the event only fires during
+        # AstrBot startup: a runtime install would wait for it forever.
+        loaded = await wait_until_loaded(
+            self._loaded_event,
+            LOADED_WAIT_TIMEOUT_SECONDS,
+        )
+        if not loaded:
+            logger.info(
+                "MemoryScope 等待 on_astrbot_loaded 超时(%.0fs)，"
+                "按运行时安装/重载处理，开始采样。",
+                LOADED_WAIT_TIMEOUT_SECONDS,
+            )
+            if self.settings.auto_start_tracemalloc:
+                logger.warning(
+                    "MemoryScope 本次不会自动开启 tracemalloc："
+                    "自动开启只在 AstrBot 启动完成后的钩子里进行，"
+                    "以免在插件导入期拖慢启动。需要归因请执行 /mem trace on "
+                    "或用页面按钮开启，也可以重启 AstrBot。",
+                )
+            self.collector.ensure_registry(force=True)
         await asyncio.sleep(FIRST_SAMPLE_DELAY_SECONDS)
         while True:
             interval = max(10, self.settings.sample_interval_seconds)

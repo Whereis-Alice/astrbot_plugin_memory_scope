@@ -2,7 +2,16 @@
 
 from __future__ import annotations
 
-from core.sampler import BYTES_PER_MB, AlertEngine, HistoryStore, Sample
+import asyncio
+import time
+
+from core.sampler import (
+    BYTES_PER_MB,
+    AlertEngine,
+    HistoryStore,
+    Sample,
+    wait_until_loaded,
+)
 
 
 def make_history(points, max_samples=720):
@@ -330,3 +339,62 @@ def test_traced_samples_respects_limit():
     history.add(rss_only(600.0))
 
     assert [s.ts for s in history.traced_samples(2)] == [240.0, 300.0]
+
+
+# ----------------------------------------------------------------------
+# wait_until_loaded: on_astrbot_loaded only fires during AstrBot startup, so a
+# plugin installed at runtime must not block on it forever.
+# ----------------------------------------------------------------------
+def test_wait_until_loaded_returns_immediately_when_already_set():
+    async def scenario():
+        event = asyncio.Event()
+        event.set()
+        started = time.monotonic()
+        result = await wait_until_loaded(event, 30.0)
+        return result, time.monotonic() - started
+
+    result, elapsed = asyncio.run(scenario())
+
+    assert result is True
+    assert elapsed < 1.0
+
+
+def test_wait_until_loaded_times_out_without_raising():
+    async def scenario():
+        return await wait_until_loaded(asyncio.Event(), 0.05)
+
+    assert asyncio.run(scenario()) is False
+
+
+def test_wait_until_loaded_accepts_a_late_hook():
+    async def scenario():
+        event = asyncio.Event()
+
+        async def fire():
+            await asyncio.sleep(0.02)
+            event.set()
+
+        task = asyncio.create_task(fire())
+        result = await wait_until_loaded(event, 5.0)
+        await task
+        return result
+
+    assert asyncio.run(scenario()) is True
+
+
+def test_wait_until_loaded_without_deadline_waits_indefinitely():
+    """timeout <= 0 keeps the pre-1.0.3 behaviour of waiting for the hook."""
+
+    async def scenario():
+        event = asyncio.Event()
+
+        async def fire():
+            await asyncio.sleep(0.02)
+            event.set()
+
+        task = asyncio.create_task(fire())
+        result = await wait_until_loaded(event, 0)
+        await task
+        return result
+
+    assert asyncio.run(scenario()) is True
