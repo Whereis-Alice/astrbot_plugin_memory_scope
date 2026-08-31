@@ -326,7 +326,10 @@ class MemoryCollector:
             )
             attribution = raw["attribution"]
             rows = self._build_rows(attribution, raw["deep"])
-            if record_sample and attribution is not None:
+            if record_sample:
+                # Recorded even without a tracemalloc snapshot: the process RSS
+                # trend is the one signal that still works with tracing off,
+                # which is now the default.
                 self._record_sample(process, attribution, rows)
             payload: dict[str, Any] = {
                 "generated_at": time.time(),
@@ -345,6 +348,7 @@ class MemoryCollector:
                 "deep_meta": raw["deep_meta"],
                 "history": {
                     "samples": self.history.count(),
+                    "traced_samples": len(self.history.traced_samples()),
                     "interval_seconds": self.settings.sample_interval_seconds,
                     "baseline_at": (
                         self.history.baseline.ts if self.history.baseline else None
@@ -374,6 +378,11 @@ class MemoryCollector:
             },
         )
         self.history.add(sample)
+        if attribution is None:
+            # Every row reads 0 bytes without a snapshot; evaluating thresholds
+            # on that would clear real alerts and hide real growth.
+            self.last_alerts = []
+            return self.last_alerts
         self.last_alerts = self.alerts.evaluate(rows, now=sample.ts)
         return self.last_alerts
 

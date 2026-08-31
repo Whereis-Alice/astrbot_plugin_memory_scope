@@ -1,4 +1,4 @@
-// MemoryScope dashboard page (v1.0.0)
+// MemoryScope dashboard page (v1.0.2)
 // Talks to core/web_api.py through the dashboard plugin bridge.
 // Layout rule: every flex/grid child sets min-width:0 in style.css, so long
 // plugin names and file paths truncate instead of stretching the page.
@@ -65,7 +65,7 @@ const HELP_FALLBACK = {
 };
 
 const NOTE_FALLBACK = {
-  tracemalloc_off: "tracemalloc 未开启，插件归因数据不可用。",
+  tracemalloc_off: "tracemalloc 未开启，只记录进程 RSS 趋势；需要按插件归因请点上方「开启追踪」。",
   tracing_started_late: "追踪在插件加载后启动，插件导入期内存未计入，数值偏小。",
   no_snapshot: "本次未取得内存快照。",
   psutil_missing: "未安装 psutil，进程级指标不可用。",
@@ -441,7 +441,20 @@ function renderCards() {
         t("metric.measured", "有数据插件"),
         fmtCount(totals.measured_plugin_count) + " / " + fmtCount(totals.plugin_count),
       ],
-      [t("metric.samples", "采样点"), fmtCount(history.samples)],
+      [
+        t("metric.samples", "采样点"),
+        // Samples taken with tracing off carry RSS only, so show how many of
+        // them actually contain per-plugin attribution.
+        num(history.traced_samples) !== null &&
+        num(history.traced_samples) !== num(history.samples)
+          ? fmtCount(history.samples) +
+            " (" +
+            t("metric.tracedSamples", "含归因") +
+            " " +
+            fmtCount(history.traced_samples) +
+            ")"
+          : fmtCount(history.samples),
+      ],
       [
         t("metric.interval", "采样间隔"),
         history.interval_seconds ? history.interval_seconds + t("unit.seconds", "秒") : null,

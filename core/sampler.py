@@ -17,6 +17,17 @@ class Sample:
     traced_bytes: int
     plugins: dict[str, int] = field(default_factory=dict)
 
+    @property
+    def has_attribution(self) -> bool:
+        """Whether tracemalloc was running when this sample was taken.
+
+        RSS-only samples are recorded while tracing is off so the process
+        trend keeps working; they must never be mixed into per-plugin series,
+        where a missing plugin would otherwise read as "dropped to 0".
+        """
+
+        return self.traced_bytes > 0 or bool(self.plugins)
+
     def to_payload(self) -> list[Any]:
         return [round(self.ts, 3), self.rss_bytes, self.traced_bytes, self.plugins]
 
@@ -72,10 +83,18 @@ class HistoryStore:
             items = items[-limit:]
         return items
 
+    def traced_samples(self, limit: int | None = None) -> list[Sample]:
+        """Samples taken while tracemalloc was on, newest last."""
+
+        items = [sample for sample in self._samples if sample.has_attribution]
+        if limit and limit > 0:
+            items = items[-limit:]
+        return items
+
     def series(self, plugin: str, limit: int | None = None) -> list[list[float]]:
         return [
             [round(sample.ts, 3), int(sample.plugins.get(plugin, 0))]
-            for sample in self.samples(limit)
+            for sample in self.traced_samples(limit)
         ]
 
     def totals_series(self, limit: int | None = None) -> list[list[float]]:
@@ -85,7 +104,9 @@ class HistoryStore:
         ]
 
     def delta(self, plugin: str, current_bytes: int) -> int | None:
-        if self._baseline is None:
+        if self._baseline is None or not self._baseline.has_attribution:
+            # A baseline pinned while tracing was off carries no per-plugin
+            # numbers, so any difference against it would be pure noise.
             return None
         return current_bytes - int(self._baseline.plugins.get(plugin, 0))
 
@@ -94,7 +115,7 @@ class HistoryStore:
 
         points = [
             (sample.ts, float(sample.plugins.get(plugin, 0)))
-            for sample in self.samples(window)
+            for sample in self.traced_samples(window)
         ]
         if len(points) < 3:
             return None

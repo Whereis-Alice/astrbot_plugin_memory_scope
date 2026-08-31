@@ -87,7 +87,11 @@ def render_overview(report: dict[str, Any], top_n: int = 8) -> str:
     rows = [row for row in (report.get("plugins") or []) if row.get("attributed_bytes")]
     lines.append("")
     if not rows:
-        lines.append("暂无可归因数据，等待下一次采样。")
+        if "tracemalloc_off" in notes:
+            # Waiting changes nothing while tracing is off; say what to do.
+            lines.append("归因数据需要先开启追踪：/mem trace on（此前只记录进程 RSS 趋势）。")
+        else:
+            lines.append("暂无可归因数据，等待下一次采样。")
         return "\n".join(lines)
 
     for index, row in enumerate(rows[: max(1, top_n)], start=1):

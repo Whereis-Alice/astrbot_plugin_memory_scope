@@ -48,6 +48,7 @@
         "uncollectable": "Uncollectable",
         "trackedObjects": "GC tracked objects",
         "samples": "Samples",
+        "tracedSamples": "traced",
         "interval": "Sample interval",
         "baselineAt": "Baseline at",
         "pid": "PID",
@@ -125,7 +126,7 @@
       },
       "note": {
         "title": "Heads up",
-        "tracemalloc_off": "tracemalloc is off, per-plugin attribution is unavailable.",
+        "tracemalloc_off": "tracemalloc is off; only process RSS is being recorded. Use “Start tracing” above for per-plugin attribution.",
         "tracing_started_late": "Tracing started after plugin load, import-time memory is not counted.",
         "no_snapshot": "No memory snapshot was taken this round.",
         "psutil_missing": "psutil is missing, process metrics are unavailable.",

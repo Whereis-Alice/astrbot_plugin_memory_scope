@@ -30,7 +30,7 @@ from .core.text_report import (
 from .core.web_api import MemoryScopeWebApi
 
 PLUGIN_ID = "astrbot_plugin_memory_scope"
-PLUGIN_VERSION = "1.0.1"
+PLUGIN_VERSION = "1.0.2"
 # Key used with the plugin KV store so history survives a reload.
 HISTORY_KEY = "history"
 # Flush the ring buffer to the KV store every N samples instead of every sample.

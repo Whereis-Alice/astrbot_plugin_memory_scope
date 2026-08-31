@@ -43,12 +43,25 @@ class StubHistory:
         self.latest: Any = SimpleNamespace(ts=100.0)
         self.calls: list[Any] = []
         self._samples = [
-            SimpleNamespace(ts=1.0, plugins={"b_plugin": 10, "a_plugin": 20}),
-            SimpleNamespace(ts=2.0, plugins={"a_plugin": 30}),
+            SimpleNamespace(
+                ts=1.0,
+                plugins={"b_plugin": 10, "a_plugin": 20},
+                has_attribution=True,
+            ),
+            SimpleNamespace(ts=2.0, plugins={"a_plugin": 30}, has_attribution=True),
+            # Recorded while tracing was off: RSS only, no per-plugin numbers.
+            SimpleNamespace(ts=3.0, plugins={}, has_attribution=False),
         ]
 
     def count(self) -> int:
         return len(self._samples)
+
+    def traced_samples(self, limit: int | None = None) -> list[Any]:
+        self.calls.append(("traced_samples", limit))
+        items = [s for s in self._samples if s.has_attribution]
+        if limit and limit > 0:
+            items = items[-limit:]
+        return items
 
     def samples(self, limit: int) -> list[Any]:
         self.calls.append(("samples", limit))
@@ -319,7 +332,11 @@ def test_overview_exposes_process_settings_and_routes(api):
     assert payload["settings"]["sample_interval_seconds"] == 60
     assert payload["settings"]["deep_scan_enabled"] is True
     assert payload["settings"]["history_size"] == 720
-    assert payload["history"] == {"samples": 2, "baseline_at": None}
+    assert payload["history"] == {
+        "samples": 3,
+        "traced_samples": 2,
+        "baseline_at": None,
+    }
     assert payload["routes"] == ["GET /api/plug/x/overview"]
     assert payload["server_time"] > 0
     # No report is built for the cheap overview call.

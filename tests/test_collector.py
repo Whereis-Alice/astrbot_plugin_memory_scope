@@ -109,8 +109,10 @@ def test_report_shape_without_tracing(tmp_path):
     assert row["retained"] is None
     assert report["deep_meta"]["fresh"] is False
 
-    # record_sample only happens when there is an attribution to record.
-    assert report["history"]["samples"] == 0
+    # The RSS trend is recorded even without tracing (the default), but the
+    # sample carries no per-plugin numbers.
+    assert report["history"]["samples"] == 1
+    assert report["history"]["traced_samples"] == 0
 
 
 def test_deep_scan_measures_retained_memory(tmp_path):

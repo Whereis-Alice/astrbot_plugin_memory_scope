@@ -277,3 +277,56 @@ def test_alerts_limit_returns_the_most_recent():
     recent = engine.alerts(limit=2)
     assert [alert.plugin for alert in recent] == ["plugin_3", "plugin_4"]
     assert len(engine.alerts(limit=0)) == 5
+
+def rss_only(ts, rss_mb=200):
+    """A sample as recorded while tracemalloc is off: RSS but no attribution."""
+
+    return Sample(ts=ts, rss_bytes=rss_mb * BYTES_PER_MB, traced_bytes=0)
+
+
+def test_rss_only_sample_is_not_marked_as_attributed():
+    assert rss_only(1.0).has_attribution is False
+    assert Sample(ts=1.0, rss_bytes=0, traced_bytes=4096).has_attribution is True
+    assert Sample(
+        ts=1.0,
+        rss_bytes=0,
+        traced_bytes=0,
+        plugins={"demo": 1},
+    ).has_attribution is True
+
+
+def test_rss_only_samples_feed_totals_but_not_plugin_series():
+    history = make_history([(0.0, 4096), (60.0, 8192)])
+    history.add(rss_only(120.0))
+
+    assert history.count() == 3
+    assert len(history.totals_series()) == 3
+    # The plugin chart must not show a phantom drop to zero at ts=120.
+    assert history.series("demo") == [[0.0, 4096], [60.0, 8192]]
+    assert len(history.traced_samples()) == 2
+
+
+def test_rss_only_samples_do_not_flatten_the_trend():
+    history = make_history([(float(i) * 60, (i + 1) * BYTES_PER_MB) for i in range(5)])
+    with_trace_only = history.trend_bytes_per_minute("demo")
+    for index in range(5):
+        history.add(rss_only(1000.0 + index * 60))
+
+    assert history.trend_bytes_per_minute("demo") == with_trace_only
+
+
+def test_baseline_without_attribution_yields_no_plugin_delta():
+    history = make_history([(0.0, 4096)])
+    history.add(rss_only(60.0))
+    history.set_baseline()
+
+    assert history.baseline is not None
+    assert history.baseline.has_attribution is False
+    assert history.delta("demo", 8192) is None
+
+
+def test_traced_samples_respects_limit():
+    history = make_history([(float(i) * 60, i * 1024) for i in range(1, 6)])
+    history.add(rss_only(600.0))
+
+    assert [s.ts for s in history.traced_samples(2)] == [240.0, 300.0]

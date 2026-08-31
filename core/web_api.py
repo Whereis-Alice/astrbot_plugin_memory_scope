@@ -160,6 +160,7 @@ class MemoryScopeWebApi:
                 },
                 "history": {
                     "samples": self.collector.history.count(),
+            "traced_samples": len(self.collector.history.traced_samples()),
                     "baseline_at": (
                         self.collector.history.baseline.ts
                         if self.collector.history.baseline
@@ -210,6 +211,7 @@ class MemoryScopeWebApi:
         history = self.collector.history
         data: dict[str, Any] = {
             "totals": history.totals_series(limit),
+            "traced_samples": len(history.traced_samples(limit)),
             "baseline_at": history.baseline.ts if history.baseline else None,
             "interval_seconds": self.collector.settings.sample_interval_seconds,
         }
