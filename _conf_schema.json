@@ -1,19 +1,25 @@
 {
   "auto_start_tracemalloc": {
-    "description": "插件启动时自动开启 tracemalloc",
-    "hint": "关闭后可在页面或 /mem trace on 手动开启。注意：由插件启动的追踪无法计入插件导入阶段已分配的内存，若要完整数据请用 PYTHONTRACEMALLOC=12 启动 AstrBot。",
+    "description": "AstrBot 加载完成后自动开启 tracemalloc",
+    "hint": "默认关闭。开启后只在所有插件加载完毕的钩子里启动追踪，绝不影响启动速度；但追踪本身会给每次内存分配加一条调用栈，长期开着会占额外内存并让分配变慢。按需用页面按钮或 /mem trace on 更省。要统计插件导入期的内存，请以 PYTHONTRACEMALLOC=12 启动 AstrBot。",
     "type": "bool",
-    "default": true
+    "default": false
+  },
+  "auto_start_min_available_mb": {
+    "description": "自动开启追踪所需的最低系统可用内存（MB）",
+    "hint": "系统可用内存低于该值时跳过自动开启，只写一条 WARNING，避免监控插件自己把机器压进 swap。0 表示不检查。",
+    "type": "float",
+    "default": 512
   },
   "tracemalloc_frames": {
     "description": "tracemalloc 记录的调用栈深度（帧）",
-    "hint": "越深归因越准确，但每个内存块的额外开销也越大。归因依赖在调用栈里找到插件自己的代码帧，1 帧几乎无法归因，建议 8~16。",
+    "hint": "越深归因越准确，但每个内存块的额外开销也越大（开销与帧数近似成正比）。归因依赖在调用栈里找到插件自己的代码帧，1 帧几乎无法归因，建议 8~16。",
     "type": "int",
     "default": 12
   },
   "sample_interval_seconds": {
     "description": "后台采样间隔（秒）",
-    "hint": "用于绘制趋势曲线和触发增长告警。范围 10~3600。",
+    "hint": "用于绘制趋势曲线和触发增长告警。范围 10~3600。单次采样过慢时插件会自动临时放大间隔（最多 8 倍）。",
     "type": "int",
     "default": 60
   },
@@ -25,7 +31,7 @@
   },
   "deep_scan_enabled": {
     "description": "启用引用图深度扫描",
-    "hint": "遍历插件实例与模块的引用图，统计其实际保留的对象大小（独占/共享）。开销明显，只在手动点击或 /mem deep 时执行。",
+    "hint": "遍历插件实例与模块的引用图，统计其实际保留的对象大小（独占/共享）。开销明显，只在手动点击或 /mem deep 时执行，不参与后台采样。",
     "type": "bool",
     "default": true
   },

@@ -9,7 +9,9 @@ from core.tracemalloc_probe import DEFAULT_FRAMES
 def test_defaults_from_empty_config():
     settings = Settings.from_config({})
 
-    assert settings.auto_start_tracemalloc is True
+    # Off by default: tracing costs memory on the very host being diagnosed.
+    assert settings.auto_start_tracemalloc is False
+    assert settings.auto_start_min_available_mb == 512.0
     assert settings.tracemalloc_frames == DEFAULT_FRAMES
     assert settings.sample_interval_seconds == 60
     assert settings.history_size == 720
@@ -35,7 +37,8 @@ def test_config_without_get_falls_back_to_defaults():
 def test_values_are_read_from_the_config():
     settings = Settings.from_config(
         {
-            "auto_start_tracemalloc": False,
+            "auto_start_tracemalloc": True,
+            "auto_start_min_available_mb": 128,
             "tracemalloc_frames": 20,
             "sample_interval_seconds": 120,
             "history_size": 1000,
@@ -52,7 +55,8 @@ def test_values_are_read_from_the_config():
         },
     )
 
-    assert settings.auto_start_tracemalloc is False
+    assert settings.auto_start_tracemalloc is True
+    assert settings.auto_start_min_available_mb == 128.0
     assert settings.tracemalloc_frames == 20
     assert settings.sample_interval_seconds == 120
     assert settings.history_size == 1000
@@ -124,6 +128,7 @@ def test_none_values_fall_back_to_defaults():
             "sample_interval_seconds": None,
             "alert_plugin_mb": None,
             "auto_start_tracemalloc": None,
+            "auto_start_min_available_mb": None,
             "persist_history": None,
         },
     )
@@ -131,7 +136,7 @@ def test_none_values_fall_back_to_defaults():
     assert settings.tracemalloc_frames == DEFAULT_FRAMES
     assert settings.sample_interval_seconds == 60
     assert settings.alert_plugin_mb == 0.0
-    assert settings.auto_start_tracemalloc is True
+    assert settings.auto_start_tracemalloc is False
     assert settings.persist_history is True
 
 
@@ -158,3 +163,9 @@ def test_numeric_strings_are_accepted():
 
     assert settings.tracemalloc_frames == 16
     assert settings.alert_plugin_mb == 128.5
+
+
+def test_negative_memory_floor_becomes_zero_meaning_no_guard():
+    settings = Settings.from_config({"auto_start_min_available_mb": -5})
+
+    assert settings.auto_start_min_available_mb == 0.0

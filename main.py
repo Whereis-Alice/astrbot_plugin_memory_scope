@@ -15,7 +15,12 @@ from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star, register
 
-from .core.collector import MemoryCollector, Settings
+from .core.collector import (
+    MemoryCollector,
+    Settings,
+    autostart_memory_block_reason,
+    available_memory_mb,
+)
 from .core.text_report import (
     format_bytes,
     render_gc,
@@ -25,14 +30,19 @@ from .core.text_report import (
 from .core.web_api import MemoryScopeWebApi
 
 PLUGIN_ID = "astrbot_plugin_memory_scope"
-PLUGIN_VERSION = "1.0.0"
+PLUGIN_VERSION = "1.0.1"
 # Key used with the plugin KV store so history survives a reload.
 HISTORY_KEY = "history"
 # Flush the ring buffer to the KV store every N samples instead of every sample.
 PERSIST_EVERY = 5
 PERSIST_KEEP = 240
-# The very first sample is taken shortly after startup so the page is not empty.
+# The first sample is taken shortly after AstrBot finished loading *every*
+# plugin, never during the import phase: a tracemalloc snapshot competes with
+# the imports for both CPU and RAM.
 FIRST_SAMPLE_DELAY_SECONDS = 8.0
+# When one sample costs more than this share of the interval, the loop backs off.
+SAMPLE_COST_RATIO = 0.2
+MAX_INTERVAL_MULTIPLIER = 8
 
 
 @register(
@@ -55,11 +65,12 @@ class MemoryScopePlugin(Star):
         self._sampler_task: asyncio.Task[None] | None = None
         self._samples_since_persist = 0
         self._history_loaded = False
-
-        if self.settings.auto_start_tracemalloc:
-            # Starting here (rather than in initialize) captures as much of the
-            # remaining plugin loading as possible.
-            self.collector.probe.start()
+        self._interval_multiplier = 1
+        # Set by the on_astrbot_loaded hook.  tracemalloc is deliberately NOT
+        # started here: starting it mid-import makes every plugin loaded after
+        # MemoryScope allocate through the trace hook, which measured 39s -> 21min
+        # of plugin loading on a 2-core / 1.6 GB host (see README).
+        self._loaded_event = asyncio.Event()
 
         self._web_routes = self.web_api.register(context)
         if not self._web_routes:
@@ -76,19 +87,19 @@ class MemoryScopePlugin(Star):
         if self._sampler_task is None or self._sampler_task.done():
             self._sampler_task = asyncio.create_task(self._sampler_loop())
         status = self.collector.probe.status()
+        if status["tracing"]:
+            tracing_state = "on"
+        elif self.settings.auto_start_tracemalloc:
+            tracing_state = "pending(等 AstrBot 加载完成)"
+        else:
+            tracing_state = "off"
         logger.info(
             "MemoryScope 已启动 · tracemalloc=%s(%s 帧) · 采样间隔 %ss · 深度扫描=%s",
-            "on" if status["tracing"] else "off",
+            tracing_state,
             status["frames"],
             self.settings.sample_interval_seconds,
             "on" if self.settings.deep_scan_enabled else "off",
         )
-        if status["tracing"] and not status["covers_plugin_import"]:
-            logger.info(
-                "MemoryScope: tracemalloc 由本插件启动，插件导入期的内存不会被计入。"
-                "如需完整数据，请以 PYTHONTRACEMALLOC=%s 启动 AstrBot。",
-                self.settings.tracemalloc_frames,
-            )
 
     async def terminate(self) -> None:
         task = self._sampler_task
@@ -107,8 +118,47 @@ class MemoryScopePlugin(Star):
 
     @filter.on_astrbot_loaded()
     async def _on_loaded(self) -> None:
-        """Re-read the plugin catalog once every plugin finished loading."""
+        """Re-read the plugin catalog and only *now* touch tracemalloc."""
         self.collector.ensure_registry(force=True)
+        self._start_tracing_if_configured()
+        self._loaded_event.set()
+
+    def _auto_start_blocked_reason(self) -> str | None:
+        """Why auto-start must be skipped, or ``None`` when it is safe.
+
+        tracemalloc keeps one traceback per live allocation, so on a host that is
+        already short on RAM turning it on trades a diagnosis for a swap storm.
+        The guard makes MemoryScope refuse to be the cause of the problem it is
+        supposed to measure.
+        """
+
+        return autostart_memory_block_reason(
+            self.settings.auto_start_min_available_mb,
+            available_memory_mb(),
+        )
+
+    def _start_tracing_if_configured(self) -> None:
+        if not self.settings.auto_start_tracemalloc:
+            return
+        probe = self.collector.probe
+        if probe.is_tracing():
+            return
+        blocked = self._auto_start_blocked_reason()
+        if blocked is not None:
+            logger.warning(
+                "MemoryScope 未自动开启 tracemalloc：%s。"
+                "需要归因时用 /mem trace on 或页面按钮手动开启，"
+                "或调低 auto_start_min_available_mb。",
+                blocked,
+            )
+            return
+        probe.start()
+        logger.info(
+            "MemoryScope 已开启 tracemalloc(%s 帧)，只统计此刻之后的分配。"
+            "需要包含插件导入期的数据请以 PYTHONTRACEMALLOC=%s 启动 AstrBot。",
+            probe.effective_frames,
+            self.settings.tracemalloc_frames,
+        )
 
     # ------------------------------------------------------------------
     # persistence
@@ -146,15 +196,41 @@ class MemoryScopePlugin(Star):
     # sampling loop
     # ------------------------------------------------------------------
     async def _sampler_loop(self) -> None:
+        # Block until every plugin is loaded, otherwise the first snapshot lands
+        # in the middle of the import storm it is meant to observe.
+        await self._loaded_event.wait()
         await asyncio.sleep(FIRST_SAMPLE_DELAY_SECONDS)
         while True:
+            interval = max(10, self.settings.sample_interval_seconds)
             try:
+                started = time.monotonic()
                 await self._sample_tick()
+                self._adjust_interval(time.monotonic() - started, interval)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 - never kill the loop
                 logger.warning("MemoryScope 采样失败: %s", exc)
-            await asyncio.sleep(max(10, self.settings.sample_interval_seconds))
+            await asyncio.sleep(interval * self._interval_multiplier)
+
+    def _adjust_interval(self, elapsed: float, interval: int) -> None:
+        """Back off when snapshots get expensive on a big or swapping process."""
+
+        budget = interval * SAMPLE_COST_RATIO
+        if elapsed > budget and self._interval_multiplier < MAX_INTERVAL_MULTIPLIER:
+            self._interval_multiplier = min(
+                MAX_INTERVAL_MULTIPLIER,
+                self._interval_multiplier * 2,
+            )
+            logger.warning(
+                "MemoryScope 单次采样耗时 %.1fs（超过间隔的 %.0f%%），"
+                "采样间隔临时放大为 %sx（%ss）。",
+                elapsed,
+                SAMPLE_COST_RATIO * 100,
+                self._interval_multiplier,
+                interval * self._interval_multiplier,
+            )
+        elif self._interval_multiplier > 1 and elapsed < budget / 2:
+            self._interval_multiplier = max(1, self._interval_multiplier // 2)
 
     async def _sample_tick(self) -> None:
         for alert in await self.collector.sample_once():

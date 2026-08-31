@@ -5,6 +5,7 @@
 - 归因来源：tracemalloc（分配归因）+ gc 引用图扫描（保留量估算）+ psutil（进程级 RSS）
 - 交互入口：Dashboard 插件页面 **MemoryScope** 与聊天命令 `/mem`
 - 采样常驻后台（默认 60 秒一次），历史写入插件 KV，重载不丢曲线
+- **不给启动过程添乱**：tracemalloc 默认不自动开启，开启也只发生在 AstrBot 全部插件加载完成之后（见「为什么默认不自动开启追踪」）
 
 ## 为什么需要三层指标
 
@@ -64,7 +65,8 @@ git clone https://github.com/Whereis-Alice/astrbot_plugin_memory_scope
 
 | 键 | 默认 | 取值范围 | 说明 |
 | --- | --- | --- | --- |
-| `auto_start_tracemalloc` | true | - | 插件加载时自动开启 tracemalloc |
+| `auto_start_tracemalloc` | **false** | - | 是否在 AstrBot 加载完成后自动开启 tracemalloc。默认关闭，按需在页面或 `/mem trace on` 开启 |
+| `auto_start_min_available_mb` | 512 | >=0 | 自动开启前的内存闸门：系统可用内存低于该值就不开，只写一条 WARNING。0 = 不检查 |
 | `tracemalloc_frames` | 12 | 1-40 | 调用栈保留帧数。太小会导致深层调用归因不到插件，太大更耗内存 |
 | `sample_interval_seconds` | 60 | 10-3600 | 后台采样间隔 |
 | `history_size` | 720 | 30-5000 | 内存中保留的采样点数量 |
@@ -79,6 +81,29 @@ git clone https://github.com/Whereis-Alice/astrbot_plugin_memory_scope
 | `command_top_n` | 8 | 1-30 | 命令默认输出条数 |
 
 告警有 30 分钟的同类冷却，不会刷屏。
+
+## 为什么默认不自动开启追踪
+
+v1.0.0 在插件构造函数里就 `tracemalloc.start(12)`，本意是尽量覆盖后续插件的导入过程。实测代价远超收益：
+
+在一台 2 核 / 1.6 GB 内存、装了 123 个插件的 AstrBot 上，MemoryScope 排在第 18 个加载，追踪从那一刻开启：
+
+| 分组 | 本次启动实测 | 无追踪时的基线 | 倍数 |
+| --- | --- | --- | --- |
+| 追踪开启**前**加载的 17 个插件 | 4 s | 4.7 s | 0.85x |
+| 追踪开启**后**加载的 104 个插件 | 1259 s | 34.5 s | **36x** |
+
+整体表现为：插件加载阶段 39 s → **1265 s（21 分钟）**，Dashboard 端口 25 分钟后仍未 listen，swap 用量从 2.0 GB 涨到 3.3 GB，运维会以为 AstrBot 启动失败。原因是 tracemalloc 会给**每一次内存分配**记录一条最多 12 帧的调用栈：import 阶段正是分配最密集的时候，既拖慢分配路径，又把追踪表本身撑大，在小内存机器上直接触发换页雪崩。
+
+v1.0.1 的处理：
+
+1. 构造函数不再碰 tracemalloc，`auto_start_tracemalloc` 默认 **false**；
+2. 即使置为 true，也只在 `on_astrbot_loaded` 钩子（所有插件加载完、Dashboard 已起）里开启，启动路径零影响；
+3. 新增 `auto_start_min_available_mb`（默认 512 MB）内存闸门，机器本来就快满时拒绝自动开启并写明原因；
+4. 后台采样循环同样等 `on_astrbot_loaded` 之后才跑第一次，避免快照撞上 import 高峰；
+5. 单次采样耗时超过采样间隔 20% 时，间隔自动临时放大（最多 8 倍）并写一条 WARNING。
+
+想要覆盖导入期的完整数据，正确做法始终是 `PYTHONTRACEMALLOC`（见下一节）：它由解释器自己在启动时开启，不存在"中途插入"的放大效应。
 
 ## 关于 tracemalloc 的重要限制
 
@@ -110,7 +135,7 @@ services:
 
 | 动作 | 开销 |
 | --- | --- |
-| tracemalloc 常开（12 帧） | 额外内存约为进程的 10%-30%，分配路径 CPU 有个位数百分比损耗 |
+| tracemalloc 常开（12 帧） | 额外内存约为进程的 10%-30%；稳态分配路径损耗不大，但在 import 高峰期实测可放大到 36 倍（见上文），所以插件绝不在加载阶段开启 |
 | 常规采样（默认 60 秒） | 一次快照统计，通常数十毫秒 |
 | 引用图深度扫描 | 数百毫秒到数秒，受 `deep_scan_*` 上限约束；仅在请求 `deep=1` 或 `/mem deep` 时执行 |
 | 手动 GC | 与进程对象数相关，通常几十到几百毫秒 |
@@ -121,7 +146,7 @@ services:
 
 ```text
 astrbot_plugin_memory_scope/
-├─ main.py                    插件入口：采样循环、KV 持久化、/mem 命令
+├─ main.py                    插件入口：延后开启追踪、采样循环、KV 持久化、/mem 命令
 ├─ core/
 │  ├─ plugin_registry.py      插件清单与"文件路径 -> 插件"解析
 │  ├─ tracemalloc_probe.py    tracemalloc 生命周期与归因算法

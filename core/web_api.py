@@ -150,6 +150,8 @@ class MemoryScopeWebApi:
                 "process": self.collector.process_stats(),
                 "settings": {
                     "sample_interval_seconds": settings.sample_interval_seconds,
+                    "auto_start_tracemalloc": settings.auto_start_tracemalloc,
+                    "auto_start_min_available_mb": settings.auto_start_min_available_mb,
                     "deep_scan_enabled": settings.deep_scan_enabled,
                     "deep_scan_time_budget_ms": settings.deep_scan_time_budget_ms,
                     "history_size": settings.history_size,

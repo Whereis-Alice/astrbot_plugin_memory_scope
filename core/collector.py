@@ -27,11 +27,41 @@ except ImportError:  # pragma: no cover
     _PSUTIL_AVAILABLE = False
 
 
+def available_memory_mb() -> float | None:
+    """Free-plus-reclaimable memory in MiB, or ``None`` without psutil."""
+
+    if not _PSUTIL_AVAILABLE:
+        return None
+    try:
+        return float(psutil.virtual_memory().available) / (1024 * 1024)
+    except Exception:  # noqa: BLE001 - a monitor must not raise on its own probe
+        return None
+
+
+def autostart_memory_block_reason(
+    floor_mb: float,
+    available_mb: float | None,
+) -> str | None:
+    """Explain why auto-starting tracemalloc is unsafe, or ``None`` when it is.
+
+    tracemalloc keeps a traceback per live allocation, so switching it on costs
+    memory on exactly the host that is already short of it.  ``floor_mb <= 0``
+    disables the guard, and a missing reading never blocks.
+    """
+
+    if floor_mb <= 0 or available_mb is None:
+        return None
+    if available_mb < floor_mb:
+        return f"系统可用内存仅 {available_mb:.0f} MB，低于安全阈值 {floor_mb:.0f} MB"
+    return None
+
+
 @dataclass(slots=True)
 class Settings:
     """Runtime knobs, mirrored from ``_conf_schema.json``."""
 
-    auto_start_tracemalloc: bool = True
+    auto_start_tracemalloc: bool = False
+    auto_start_min_available_mb: float = 512.0
     tracemalloc_frames: int = DEFAULT_FRAMES
     sample_interval_seconds: int = 60
     history_size: int = 720
@@ -71,7 +101,8 @@ class Settings:
             return bool(read(key, default))
 
         return cls(
-            auto_start_tracemalloc=as_bool("auto_start_tracemalloc", True),
+            auto_start_tracemalloc=as_bool("auto_start_tracemalloc", False),
+            auto_start_min_available_mb=as_float("auto_start_min_available_mb", 512.0),
             tracemalloc_frames=as_int("tracemalloc_frames", DEFAULT_FRAMES, 1, 40),
             sample_interval_seconds=as_int("sample_interval_seconds", 60, 10, 3600),
             history_size=as_int("history_size", 720, 30, 5000),

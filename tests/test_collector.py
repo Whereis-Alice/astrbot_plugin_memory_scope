@@ -10,7 +10,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from core.collector import MemoryCollector, Settings
+from core.collector import (
+    MemoryCollector,
+    Settings,
+    autostart_memory_block_reason,
+    available_memory_mb,
+)
 
 PLUGIN_ID = "astrbot_plugin_memory_scope"
 
@@ -328,3 +333,24 @@ def test_object_count_is_optional(tmp_path):
 
     assert with_count["process"]["gc"]["tracked_objects"] is not None
     assert "tracked_objects" not in without_count["process"]["gc"]
+
+
+def test_autostart_guard_blocks_only_below_the_floor():
+    assert autostart_memory_block_reason(512.0, 700.0) is None
+    reason = autostart_memory_block_reason(512.0, 84.0)
+    assert reason is not None
+    assert "84" in reason and "512" in reason
+
+
+def test_autostart_guard_is_disabled_or_skipped():
+    # floor <= 0 means the operator opted out of the guard entirely.
+    assert autostart_memory_block_reason(0.0, 1.0) is None
+    assert autostart_memory_block_reason(-5.0, 1.0) is None
+    # No psutil reading must never block the feature.
+    assert autostart_memory_block_reason(512.0, None) is None
+
+
+def test_available_memory_mb_is_a_positive_number_or_none():
+    value = available_memory_mb()
+    assert value is None or value > 0
+
