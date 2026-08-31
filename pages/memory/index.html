@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="zh-CN" data-skin="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>MemoryScope</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <div class="ms-app">
+      <header class="ms-top">
+        <div class="ms-brand">
+          <span class="ms-mark" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" focusable="false">
+              <rect x="4" y="7" width="16" height="10" rx="2" />
+              <path d="M8 7V4M12 7V4M16 7V4M8 20v-3M12 20v-3M16 20v-3" />
+              <path d="M8.5 11.5h2.2l1.1 3 1.2-4.6 1 1.6h1.5" />
+            </svg>
+          </span>
+          <div class="ms-brand-text">
+            <h1 id="page-title">MemoryScope 内存分析</h1>
+            <p id="page-desc">按插件查看内存归因、保留量、增长趋势与告警</p>
+          </div>
+        </div>
+        <div class="ms-top-actions">
+          <div class="ms-field">
+            <label id="auto-label" for="auto-select">自动刷新</label>
+            <select id="auto-select" class="ms-input"></select>
+          </div>
+          <div class="ms-field">
+            <label id="skin-label" for="skin-select">主题</label>
+            <select id="skin-select" class="ms-input"></select>
+          </div>
+          <button id="btn-refresh" class="ms-btn ms-btn-primary" type="button">刷新</button>
+          <button id="btn-deep" class="ms-btn" type="button">深度扫描</button>
+        </div>
+      </header>
+
+      <div id="banner" class="ms-banner" hidden>
+        <span class="ms-banner-ico" aria-hidden="true">!</span>
+        <div class="ms-banner-body">
+          <strong id="banner-title"></strong>
+          <p id="banner-text"></p>
+        </div>
+        <div class="ms-banner-actions">
+          <button id="btn-trace" class="ms-btn ms-btn-ghost" type="button"></button>
+        </div>
+      </div>
+
+      <nav class="ms-tabs" role="tablist" aria-label="MemoryScope">
+        <button class="ms-tab is-active" type="button" role="tab" data-tab="overview" aria-selected="true">
+          <span class="ms-tab-ico" aria-hidden="true">◧</span><span data-i18n="tab.overview">总览</span>
+        </button>
+        <button class="ms-tab" type="button" role="tab" data-tab="plugins" aria-selected="false">
+          <span class="ms-tab-ico" aria-hidden="true">▥</span><span data-i18n="tab.plugins">插件占用</span>
+        </button>
+        <button class="ms-tab" type="button" role="tab" data-tab="alerts" aria-selected="false">
+          <span class="ms-tab-ico" aria-hidden="true">◈</span><span data-i18n="tab.alerts">告警</span><span id="alert-badge" class="ms-badge" hidden>0</span>
+        </button>
+        <button class="ms-tab" type="button" role="tab" data-tab="help" aria-selected="false">
+          <span class="ms-tab-ico" aria-hidden="true">ℹ</span><span data-i18n="tab.help">指标说明</span>
+        </button>
+      </nav>
+
+      <main class="ms-panels">
+        <section class="ms-panel is-active" id="panel-overview" role="tabpanel">
+          <div class="ms-cards" id="cards"></div>
+          <div class="ms-grid2">
+            <section class="ms-card ms-card-wide">
+              <header class="ms-card-head">
+                <h2 data-i18n="chart.top">占用最高的插件</h2>
+                <div class="ms-card-tools">
+                  <button id="btn-baseline-set" class="ms-btn ms-btn-ghost ms-btn-sm" type="button">设为基线</button>
+                  <button id="btn-baseline-clear" class="ms-btn ms-btn-ghost ms-btn-sm" type="button">清除基线</button>
+                  <button id="btn-gc" class="ms-btn ms-btn-ghost ms-btn-sm" type="button">强制 GC</button>
+                </div>
+              </header>
+              <div id="top-chart" class="ms-chart"></div>
+            </section>
+            <section class="ms-card">
+              <header class="ms-card-head">
+                <h2 data-i18n="others.title">非插件部分</h2>
+              </header>
+              <p class="ms-hint" data-i18n="others.desc">无法归因到插件的分配，按来源归类。</p>
+              <div id="others" class="ms-bars"></div>
+            </section>
+          </div>
+        </section>
+
+        <section class="ms-panel" id="panel-plugins" role="tabpanel">
+          <div class="ms-toolbar">
+            <input id="search" class="ms-input ms-search" type="search" placeholder="搜索插件名…" />
+            <span id="deep-state" class="ms-chip"></span>
+            <span id="plugin-count" class="ms-chip ms-chip-quiet"></span>
+          </div>
+          <p class="ms-hint" id="deep-hint" data-i18n="table.deepHint">独占/共享来自引用图深度扫描，需要手动点击「深度扫描」。</p>
+          <div class="ms-table-wrap">
+            <table class="ms-table" id="plugin-table">
+              <thead><tr id="plugin-head"></tr></thead>
+              <tbody id="plugin-body"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="ms-panel" id="panel-alerts" role="tabpanel">
+          <div id="alerts" class="ms-list"></div>
+        </section>
+
+        <section class="ms-panel" id="panel-help" role="tabpanel">
+          <section class="ms-card">
+            <header class="ms-card-head"><h2 data-i18n="help.title">各列含义与局限</h2></header>
+            <dl class="ms-help" id="help-list"></dl>
+          </section>
+        </section>
+      </main>
+    </div>
+
+    <div id="drawer" class="ms-drawer" hidden>
+      <div class="ms-drawer-scrim" data-close="1"></div>
+      <aside class="ms-drawer-body" role="dialog" aria-modal="true" aria-labelledby="drawer-title">
+        <header class="ms-drawer-head">
+          <h2 id="drawer-title">插件详情</h2>
+          <button id="drawer-close" class="ms-btn ms-btn-ghost ms-btn-sm" type="button">关闭</button>
+        </header>
+        <div id="drawer-content" class="ms-drawer-content"></div>
+      </aside>
+    </div>
+
+    <div id="toast" class="ms-toast" hidden></div>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

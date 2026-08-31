@@ -1,0 +1,181 @@
+{
+  "metadata": {
+    "display_name": "MemoryScope",
+    "description": "Per-plugin memory accounting for AstrBot: tracemalloc attribution, retained-size scan, trends and leak alerts."
+  },
+  "pages": {
+    "memory": {
+      "title": "MemoryScope",
+      "desc": "Per-plugin memory attribution, retained size, growth trends and alerts",
+      "tab": {
+        "overview": "Overview",
+        "plugins": "Plugins",
+        "alerts": "Alerts",
+        "help": "Metrics"
+      },
+      "action": {
+        "refresh": "Refresh",
+        "deep": "Deep scan",
+        "baselineSet": "Set baseline",
+        "baselineClear": "Clear baseline",
+        "gc": "Force GC",
+        "close": "Close",
+        "traceOn": "Start tracing",
+        "traceOff": "Stop tracing",
+        "resetPeak": "Reset peak",
+        "copy": "Copy"
+      },
+      "auto": {
+        "label": "Auto refresh",
+        "off": "Off"
+      },
+      "card": {
+        "process": "Process memory",
+        "tracemalloc": "Traced memory",
+        "plugins": "Plugin total",
+        "gc": "Garbage collector"
+      },
+      "metric": {
+        "vms": "VMS",
+        "threads": "Threads",
+        "uptime": "Uptime",
+        "peak": "Peak",
+        "frames": "Stack depth",
+        "pluginShare": "Share of traced",
+        "measured": "With data",
+        "gcCounts": "Pending per generation",
+        "gcCollections": "Collections per generation",
+        "uncollectable": "Uncollectable",
+        "trackedObjects": "GC tracked objects",
+        "samples": "Samples",
+        "interval": "Sample interval",
+        "baselineAt": "Baseline at",
+        "pid": "PID",
+        "python": "Python"
+      },
+      "trace": {
+        "on": "tracemalloc is on",
+        "off": "tracemalloc is off",
+        "offHint": "Per-plugin attribution needs tracemalloc. Turn it on with the button on the right.",
+        "late": "Tracing started after plugins were loaded",
+        "lateHint": "Memory allocated while importing plugins is not counted, so every plugin reads lower than reality. Start AstrBot with PYTHONTRACEMALLOC=12 for complete data.",
+        "full": "Tracing covers plugin import, data is complete."
+      },
+      "col": {
+        "plugin": "Plugin",
+        "attributed": "Attributed",
+        "direct": "Direct",
+        "exclusive": "Exclusive",
+        "shared": "Shared",
+        "objects": "Objects",
+        "delta": "Δ baseline",
+        "trend": "Trend",
+        "share": "Share",
+        "blocks": "Blocks",
+        "chart": "Recent"
+      },
+      "table": {
+        "search": "Search plugins…",
+        "empty": "No data yet",
+        "noMatch": "No matching plugin",
+        "self": "this plugin",
+        "inactive": "disabled",
+        "reserved": "built-in",
+        "total": "{n} plugins",
+        "deepHint": "Exclusive/shared come from the reference-graph deep scan; run it with the Deep scan button.",
+        "deepStale": "Deep scan from",
+        "deepNever": "deep scan not run yet",
+        "deepTruncated": "Deep scan hit its limits, exclusive/shared read lower than reality."
+      },
+      "chart": {
+        "top": "Largest plugins",
+        "empty": "Nothing attributed yet",
+        "series": "Sampled trend"
+      },
+      "others": {
+        "title": "Non-plugin memory",
+        "desc": "Allocations that cannot be attributed to a plugin, grouped by origin.",
+        "bucket_astrbot_core": "AstrBot core",
+        "bucket_python_stdlib": "Python stdlib",
+        "bucket_other": "Other code",
+        "bucket_unknown": "No traceback (stack too shallow)",
+        "bucket_rest": "Remaining"
+      },
+      "detail": {
+        "title": "Plugin details",
+        "meta": "Metadata",
+        "numbers": "Memory metrics",
+        "hotspots": "Allocation hotspots",
+        "hotspotsEmpty": "No allocation sites captured — tracing may be off or the stack too shallow.",
+        "submodules": "Loaded submodules",
+        "submodulesEmpty": "No extra submodules",
+        "series": "Attributed memory over time",
+        "seriesEmpty": "Not enough samples yet.",
+        "notFound": "Plugin not found, it may have been unloaded.",
+        "version": "Version",
+        "author": "Author",
+        "module": "Module path",
+        "root": "Directory"
+      },
+      "alerts": {
+        "empty": "No alerts",
+        "disabled": "No alert thresholds configured. Set alert_plugin_mb and alert_growth_mb_per_hour in the plugin config.",
+        "kind_size": "Over size limit",
+        "kind_growth": "Growing"
+      },
+      "note": {
+        "title": "Heads up",
+        "tracemalloc_off": "tracemalloc is off, per-plugin attribution is unavailable.",
+        "tracing_started_late": "Tracing started after plugin load, import-time memory is not counted.",
+        "no_snapshot": "No memory snapshot was taken this round.",
+        "psutil_missing": "psutil is missing, process metrics are unavailable.",
+        "deep_scan_truncated": "Deep scan was truncated, exclusive/shared read lower than reality."
+      },
+      "help": {
+        "title": "What the columns mean, and what they miss",
+        "attributed": "Attributed: total allocations whose innermost frame inside the traceback belongs to this plugin. It answers \"who asked for this memory\", including memory the plugin requested through the stdlib or third-party libraries.",
+        "direct": "Direct: the part of Attributed whose innermost frame is the plugin's own code. A large gap means most memory is allocated by libraries the plugin calls.",
+        "exclusive": "Exclusive: walking the reference graph from the plugin instance and its modules, the total size of objects reachable only from this plugin. It answers \"what cannot be freed while the plugin stays loaded\".",
+        "shared": "Shared: size of objects reachable from more than one plugin. Kept out of Exclusive to avoid double counting.",
+        "trend": "Trend: least-squares slope over recent samples, scaled to one hour. A steadily positive value usually means a leak or a growing cache.",
+        "limits": "Limits: tracemalloc only sees Python-level allocations. C extension buffers (numpy, PIL) and interpreter overhead are invisible, so the plugin totals are much smaller than process RSS. Tracing itself costs roughly 10-30% extra memory and CPU.",
+        "env": "For complete data start AstrBot with PYTHONTRACEMALLOC=12 so tracing is active before any plugin is imported.",
+        "cost": "Cost: a normal refresh only reads a snapshot and is cheap. A deep scan walks the reference graph and can stall for hundreds of milliseconds to a few seconds."
+      },
+      "unit": {
+        "perHour": "/h",
+        "ms": "ms",
+        "seconds": "s"
+      },
+      "status": {
+        "yes": "yes",
+        "no": "no",
+        "never": "never",
+        "fresh": "this refresh"
+      },
+      "toast": {
+        "refreshed": "Refreshed",
+        "deepDone": "Deep scan finished",
+        "baselineSet": "Baseline saved",
+        "baselineCleared": "Baseline cleared",
+        "gcDone": "GC finished",
+        "traceStarted": "tracemalloc started",
+        "traceStopped": "tracemalloc stopped",
+        "peakReset": "Peak reset",
+        "copied": "Copied",
+        "copyFailed": "Copy failed",
+        "loading": "Loading…",
+        "deepRunning": "Walking the reference graph…"
+      },
+      "error": {
+        "request": "Request failed"
+      },
+      "skin": {
+        "label": "Theme",
+        "auto": "Follow Dashboard",
+        "dark": "Dark",
+        "light": "Light"
+      }
+    }
+  }
+}

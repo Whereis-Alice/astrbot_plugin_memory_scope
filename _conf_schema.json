@@ -1,0 +1,77 @@
+{
+  "auto_start_tracemalloc": {
+    "description": "插件启动时自动开启 tracemalloc",
+    "hint": "关闭后可在页面或 /mem trace on 手动开启。注意：由插件启动的追踪无法计入插件导入阶段已分配的内存，若要完整数据请用 PYTHONTRACEMALLOC=12 启动 AstrBot。",
+    "type": "bool",
+    "default": true
+  },
+  "tracemalloc_frames": {
+    "description": "tracemalloc 记录的调用栈深度（帧）",
+    "hint": "越深归因越准确，但每个内存块的额外开销也越大。归因依赖在调用栈里找到插件自己的代码帧，1 帧几乎无法归因，建议 8~16。",
+    "type": "int",
+    "default": 12
+  },
+  "sample_interval_seconds": {
+    "description": "后台采样间隔（秒）",
+    "hint": "用于绘制趋势曲线和触发增长告警。范围 10~3600。",
+    "type": "int",
+    "default": 60
+  },
+  "history_size": {
+    "description": "内存中保留的采样点数量",
+    "hint": "按采样间隔换算保留时长，例如 60 秒 × 720 ≈ 12 小时。",
+    "type": "int",
+    "default": 720
+  },
+  "deep_scan_enabled": {
+    "description": "启用引用图深度扫描",
+    "hint": "遍历插件实例与模块的引用图，统计其实际保留的对象大小（独占/共享）。开销明显，只在手动点击或 /mem deep 时执行。",
+    "type": "bool",
+    "default": true
+  },
+  "deep_scan_max_objects": {
+    "description": "单个插件最多遍历的对象数",
+    "type": "int",
+    "default": 120000
+  },
+  "deep_scan_max_objects_total": {
+    "description": "单次深度扫描最多遍历的对象总数",
+    "type": "int",
+    "default": 400000
+  },
+  "deep_scan_time_budget_ms": {
+    "description": "单次深度扫描时间上限（毫秒）",
+    "hint": "超时会提前结束并把结果标注为“已截断”。",
+    "type": "int",
+    "default": 3000
+  },
+  "include_object_count": {
+    "description": "深度扫描时统计 GC 跟踪对象总数",
+    "hint": "会调用 gc.get_objects()，在大进程上可能卡顿数百毫秒，默认关闭。",
+    "type": "bool",
+    "default": false
+  },
+  "alert_plugin_mb": {
+    "description": "单插件归因内存告警阈值（MB）",
+    "hint": "0 表示不告警。超过阈值时写入一条 WARNING 日志，并显示在页面告警列表中。",
+    "type": "float",
+    "default": 0
+  },
+  "alert_growth_mb_per_hour": {
+    "description": "单插件增长速率告警阈值（MB/小时）",
+    "hint": "0 表示不告警。基于最近采样的最小二乘斜率，用于发现疑似内存泄漏。",
+    "type": "float",
+    "default": 0
+  },
+  "persist_history": {
+    "description": "把采样历史持久化到插件 KV 存储",
+    "hint": "重载或重启插件后仍能看到之前的趋势与基线。",
+    "type": "bool",
+    "default": true
+  },
+  "command_top_n": {
+    "description": "/mem top 默认显示的插件数量",
+    "type": "int",
+    "default": 8
+  }
+}

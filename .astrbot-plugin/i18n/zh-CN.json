@@ -1,0 +1,181 @@
+{
+  "metadata": {
+    "display_name": "MemoryScope 内存分析",
+    "description": "按插件维度统计 AstrBot 的内存占用：tracemalloc 归因、引用图保留量、趋势与泄漏告警。"
+  },
+  "pages": {
+    "memory": {
+      "title": "MemoryScope 内存分析",
+      "desc": "按插件查看内存归因、保留量、增长趋势与告警",
+      "tab": {
+        "overview": "总览",
+        "plugins": "插件占用",
+        "alerts": "告警",
+        "help": "指标说明"
+      },
+      "action": {
+        "refresh": "刷新",
+        "deep": "深度扫描",
+        "baselineSet": "设为基线",
+        "baselineClear": "清除基线",
+        "gc": "强制 GC",
+        "close": "关闭",
+        "traceOn": "开启追踪",
+        "traceOff": "关闭追踪",
+        "resetPeak": "重置峰值",
+        "copy": "复制"
+      },
+      "auto": {
+        "label": "自动刷新",
+        "off": "关闭"
+      },
+      "card": {
+        "process": "进程内存",
+        "tracemalloc": "已跟踪内存",
+        "plugins": "插件合计",
+        "gc": "垃圾回收"
+      },
+      "metric": {
+        "vms": "VMS 虚拟内存",
+        "threads": "线程数",
+        "uptime": "运行时长",
+        "peak": "峰值",
+        "frames": "栈深度",
+        "pluginShare": "占已跟踪比例",
+        "measured": "有数据插件",
+        "gcCounts": "各代待回收",
+        "gcCollections": "各代回收次数",
+        "uncollectable": "不可回收对象",
+        "trackedObjects": "GC 跟踪对象",
+        "samples": "采样点",
+        "interval": "采样间隔",
+        "baselineAt": "基线时间",
+        "pid": "进程 PID",
+        "python": "Python"
+      },
+      "trace": {
+        "on": "tracemalloc 已开启",
+        "off": "tracemalloc 未开启",
+        "offHint": "未开启内存追踪时无法按插件归因，点击右侧按钮开启。",
+        "late": "追踪在插件加载之后才启动",
+        "lateHint": "插件导入阶段已分配的内存不会被计入，各插件的数值会偏小。以 PYTHONTRACEMALLOC=12 启动 AstrBot 可获得完整数据。",
+        "full": "追踪覆盖插件导入阶段，数据完整。"
+      },
+      "col": {
+        "plugin": "插件",
+        "attributed": "归因分配",
+        "direct": "直接分配",
+        "exclusive": "独占保留",
+        "shared": "共享保留",
+        "objects": "对象数",
+        "delta": "Δ 基线",
+        "trend": "增长趋势",
+        "share": "占比",
+        "blocks": "内存块",
+        "chart": "近期曲线"
+      },
+      "table": {
+        "search": "搜索插件名…",
+        "empty": "暂无数据",
+        "noMatch": "没有匹配的插件",
+        "self": "本插件",
+        "inactive": "已禁用",
+        "reserved": "内置",
+        "total": "共 {n} 个插件",
+        "deepHint": "独占/共享来自引用图深度扫描，需要手动点击「深度扫描」。",
+        "deepStale": "深度扫描数据来自",
+        "deepNever": "尚未执行深度扫描",
+        "deepTruncated": "深度扫描已达上限被截断，独占/共享偏小。"
+      },
+      "chart": {
+        "top": "占用最高的插件",
+        "empty": "还没有可归因的数据",
+        "series": "采样趋势"
+      },
+      "others": {
+        "title": "非插件部分",
+        "desc": "无法归因到插件的分配，按来源归类。",
+        "bucket_astrbot_core": "AstrBot 核心",
+        "bucket_python_stdlib": "Python 标准库",
+        "bucket_other": "其他代码",
+        "bucket_unknown": "无调用栈（帧深度不足）",
+        "bucket_rest": "其余来源"
+      },
+      "detail": {
+        "title": "插件详情",
+        "meta": "基本信息",
+        "numbers": "内存指标",
+        "hotspots": "分配热点",
+        "hotspotsEmpty": "没有采集到分配位置，可能是追踪未开启或栈深度不足。",
+        "submodules": "已加载子模块",
+        "submodulesEmpty": "没有额外子模块",
+        "series": "归因内存趋势",
+        "seriesEmpty": "采样点不足，稍后再看。",
+        "notFound": "未找到该插件，可能已被卸载。",
+        "version": "版本",
+        "author": "作者",
+        "module": "模块路径",
+        "root": "插件目录"
+      },
+      "alerts": {
+        "empty": "暂无告警",
+        "disabled": "未设置告警阈值，可在插件配置中设置 alert_plugin_mb 与 alert_growth_mb_per_hour。",
+        "kind_size": "占用超限",
+        "kind_growth": "持续增长"
+      },
+      "note": {
+        "title": "需要注意",
+        "tracemalloc_off": "tracemalloc 未开启，插件归因数据不可用。",
+        "tracing_started_late": "追踪在插件加载后启动，插件导入期内存未计入，数值偏小。",
+        "no_snapshot": "本次未取得内存快照。",
+        "psutil_missing": "未安装 psutil，进程级指标不可用。",
+        "deep_scan_truncated": "深度扫描被截断，独占/共享保留量偏小。"
+      },
+      "help": {
+        "title": "各列含义与局限",
+        "attributed": "归因分配：tracemalloc 记录的、调用栈中最内层属于该插件的分配总量。它反映“这些内存是谁申请的”，包含插件调用标准库或第三方库时申请的内存。",
+        "direct": "直接分配：归因分配中，最内层调用帧就在插件代码里的部分。二者差值大，说明内存主要由插件调用的库申请。",
+        "exclusive": "独占保留：从插件实例与模块出发遍历引用图，仅该插件可达的对象大小之和。它反映“插件不卸载就无法释放的内存”。",
+        "shared": "共享保留：被多个插件同时可达的对象大小，为避免重复计算不计入独占。",
+        "trend": "增长趋势：最近采样点的最小二乘斜率，折算为每小时。持续为正通常意味着泄漏或缓存增长。",
+        "limits": "局限：tracemalloc 只统计 Python 层分配，C 扩展（如 numpy、PIL 的缓冲区）与解释器自身开销不在其内，因此各插件之和会明显小于进程 RSS。追踪本身也会带来 10%~30% 的额外内存与 CPU 开销。",
+        "env": "获得完整数据：以环境变量 PYTHONTRACEMALLOC=12 启动 AstrBot，追踪会在导入任何插件之前生效。",
+        "cost": "开销：常规刷新只读取快照，开销很小；深度扫描会遍历引用图，会带来数百毫秒到数秒的停顿，请按需使用。"
+      },
+      "unit": {
+        "perHour": "/小时",
+        "ms": "毫秒",
+        "seconds": "秒"
+      },
+      "status": {
+        "yes": "是",
+        "no": "否",
+        "never": "从未",
+        "fresh": "本次刷新"
+      },
+      "toast": {
+        "refreshed": "已刷新",
+        "deepDone": "深度扫描完成",
+        "baselineSet": "已设为基线",
+        "baselineCleared": "已清除基线",
+        "gcDone": "GC 完成",
+        "traceStarted": "已开启 tracemalloc",
+        "traceStopped": "已关闭 tracemalloc",
+        "peakReset": "已重置峰值",
+        "copied": "已复制",
+        "copyFailed": "复制失败",
+        "loading": "加载中…",
+        "deepRunning": "正在扫描引用图…"
+      },
+      "error": {
+        "request": "请求失败"
+      },
+      "skin": {
+        "label": "主题",
+        "auto": "跟随 Dashboard",
+        "dark": "深色",
+        "light": "浅色"
+      }
+    }
+  }
+}
