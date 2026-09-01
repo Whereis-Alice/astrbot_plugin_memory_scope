@@ -3,6 +3,17 @@
 *, *::before, *::after { box-sizing: border-box; }
 html, body { min-height: 100%; margin: 0; }
 
+/* The hidden attribute must beat class-level display rules.  Without this
+   reset a rule such as .ms-drawer { display: flex } keeps the node visible
+   even after JS sets element.hidden, and its full-screen scrim then swallows
+   every click on the page. */
+[hidden] { display: none !important; }
+
+/* The hidden attribute must beat class-level display rules.  Without this
+   reset a rule such as .ms-drawer { display: flex } keeps the node visible
+   even after JS sets element.hidden, and its full-screen scrim then swallows
+   every click on the page. */
+
 html {
   --radius: 10px;
   --radius-sm: 6px;
