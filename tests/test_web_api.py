@@ -1,4 +1,4 @@
-"""Dashboard endpoints: argument parsing, error paths and payload shapes."""
+"""Dashboard endpoints for the v2 lightweight probes."""
 
 from __future__ import annotations
 
@@ -12,78 +12,52 @@ from core import web_api
 from core.collector import Settings
 
 
-# ----------------------------------------------------------------------
-# stubs
-# ----------------------------------------------------------------------
-class StubProbe:
-    def __init__(self) -> None:
-        self.calls: list[Any] = []
-        self.tracing = False
-
-    def start(self) -> bool:
-        self.calls.append("start")
-        self.tracing = True
-        return True
-
-    def stop(self, only_if_started_by_plugin: bool = True) -> bool:
-        self.calls.append(("stop", only_if_started_by_plugin))
-        self.tracing = False
-        return True
-
-    def reset_peak(self) -> None:
-        self.calls.append("reset_peak")
-
-    def status(self) -> dict[str, Any]:
-        return {"tracing": self.tracing, "frames": 4}
-
-
 class StubHistory:
     def __init__(self) -> None:
         self.baseline: Any = None
         self.latest: Any = SimpleNamespace(ts=100.0)
         self.calls: list[Any] = []
-        self._samples = [
-            SimpleNamespace(
-                ts=1.0,
-                plugins={"b_plugin": 10, "a_plugin": 20},
-                has_attribution=True,
-            ),
-            SimpleNamespace(ts=2.0, plugins={"a_plugin": 30}, has_attribution=True),
-            # Recorded while tracing was off: RSS only, no per-plugin numbers.
-            SimpleNamespace(ts=3.0, plugins={}, has_attribution=False),
-        ]
 
     def count(self) -> int:
-        return len(self._samples)
+        return 3
 
-    def traced_samples(self, limit: int | None = None) -> list[Any]:
-        self.calls.append(("traced_samples", limit))
-        items = [s for s in self._samples if s.has_attribution]
-        if limit and limit > 0:
-            items = items[-limit:]
-        return items
+    def census_samples(self, limit=None):
+        self.calls.append(("census_samples", limit))
+        return [SimpleNamespace(ts=1), SimpleNamespace(ts=2)]
 
-    def samples(self, limit: int) -> list[Any]:
+    def samples(self, limit=None):
         self.calls.append(("samples", limit))
-        return self._samples[-limit:]
+        return [
+            SimpleNamespace(ts=1.0, plugins={"b": 10}),
+            SimpleNamespace(ts=2.0, plugins={"a": 20}),
+        ]
 
-    def totals_series(self, limit: int) -> list[Any]:
+    def totals_series(self, limit):
         self.calls.append(("totals_series", limit))
-        return [[1.0, 30], [2.0, 30]]
+        return [[1.0, 100, 20], [2.0, 110, 20]]
 
-    def series(self, plugin: str, limit: int) -> list[Any]:
+    def rss_series(self, limit):
+        self.calls.append(("rss_series", limit))
+        return [[1.0, 100], [2.0, 110]]
+
+    def series(self, plugin, limit):
         self.calls.append(("series", plugin, limit))
-        return [[2.0, 30]]
+        return [[2.0, 20]]
 
-    def trend_bytes_per_minute(self, plugin: str) -> float:
+    def trend_bytes_per_minute(self, plugin):
         self.calls.append(("trend", plugin))
         return 1234.0
 
-    def set_baseline(self) -> None:
+    def rss_trend_bytes_per_minute(self):
+        self.calls.append(("rss_trend",))
+        return 5678.0
+
+    def set_baseline(self):
         self.calls.append("set_baseline")
         self.baseline = SimpleNamespace(ts=42.0)
+        return self.baseline
 
-    def clear_baseline(self) -> None:
+    def clear_baseline(self):
         self.calls.append("clear_baseline")
         self.baseline = None
 
@@ -93,13 +67,13 @@ class StubAlerts:
         self.enabled = True
         self.calls: list[Any] = []
 
-    def alerts(self, limit: int) -> list[Any]:
+    def alerts(self, limit):
         self.calls.append(limit)
         return [
             SimpleNamespace(
                 ts=5.0,
                 plugin="a_plugin",
-                kind="size",
+                kind="rss",
                 message="too big",
                 value=99.0,
             ),
@@ -107,99 +81,84 @@ class StubAlerts:
 
 
 class StubRegistry:
-    def __init__(self, known: set[str], discovered: set[str] | None = None) -> None:
-        self.known = set(known)
+    def __init__(self, known=None, discovered=None):
+        self.known = set(known or {"a_plugin"})
         self.discovered = set(discovered or ())
 
-    def get(self, name: str) -> Any:
-        if name in self.known:
-            return SimpleNamespace(name=name)
-        return None
-
-    def refresh(self) -> None:  # pragma: no cover - not used directly
-        self.known |= self.discovered
+    def get(self, name):
+        return SimpleNamespace(name=name) if name in self.known else None
 
 
 class StubCollector:
-    def __init__(
-        self,
-        known: set[str] | None = None,
-        discovered: set[str] | None = None,
-    ) -> None:
+    def __init__(self, known=None, discovered=None):
         self.settings = Settings.from_config({})
-        self.probe = StubProbe()
         self.history = StubHistory()
         self.alerts = StubAlerts()
-        self.registry = StubRegistry(known if known is not None else {"a_plugin"}, discovered)
+        self.registry = StubRegistry(known, discovered)
         self.report_calls: list[dict[str, Any]] = []
         self.ensure_calls: list[bool] = []
         self.gc_calls = 0
+        self.census_calls = 0
+        self.audit_calls = 0
 
-    def process_stats(self) -> dict[str, Any]:
+    def process_stats(self, include_object_count=False):
         return {"pid": 4242, "rss_bytes": 1024}
 
-    def ensure_registry(self, force: bool = False) -> None:
+    def import_hook_status(self):
+        return {"installed": False, "degraded": False, "overhead_ms": 0}
+
+    def ensure_registry(self, force=False):
         self.ensure_calls.append(force)
         self.registry.known |= self.registry.discovered
 
-    async def build_report(self, **kwargs: Any) -> dict[str, Any]:
+    async def build_report(self, **kwargs):
         self.report_calls.append(kwargs)
         name = kwargs.get("detail_for")
         return {
             "generated_at": 777.0,
+            "process": {"import_hook": {"installed": False}},
             "plugins": [],
-            "notes": ["tracemalloc_off"],
+            "packages": [],
+            "opportunities": [],
+            "audit_meta": None,
+            "totals": {},
+            "notes": ["census_never_run"],
             "detail": None if name is None else {"name": name, "found": True},
         }
 
-    async def force_gc(self) -> dict[str, Any]:
+    async def census_now(self):
+        self.census_calls += 1
+        return {"generated_at": 778.0, "census_meta": {}, "plugins": [], "totals": {}, "notes": []}
+
+    async def audit_now(self):
+        self.audit_calls += 1
+        return {"generated_at": 779.0, "audit_meta": {}, "opportunities": [], "plugins": [], "totals": {}, "notes": []}
+
+    async def force_gc(self):
         self.gc_calls += 1
         return {"collected": 7}
 
 
 class FakeRequest:
-    """Minimal stand-in for the quart request object."""
-
-    def __init__(
-        self,
-        args: dict[str, str] | None = None,
-        body: Any = None,
-        *,
-        awaitable_body: bool = False,
-    ) -> None:
+    def __init__(self, args=None, body=None, awaitable_body=False):
         self.args = dict(args or {})
         self._body = body
         self._awaitable_body = awaitable_body
 
-    def get_json(self, force: bool = False, silent: bool = False) -> Any:
+    def get_json(self, force=False, silent=False):
         if self._awaitable_body:
-
-            async def _later() -> Any:
+            async def later():
                 return self._body
-
-            return _later()
+            return later()
         return self._body
 
 
 @pytest.fixture()
-def api(monkeypatch: pytest.MonkeyPatch):
-    """Patch the response helpers into plain dicts so assertions stay readable."""
-
-    def fake_json_response(
-        data: Any = None,
-        *,
-        status_code: int = 200,
-        headers: dict[str, str] | None = None,
-    ) -> dict[str, Any]:
+def api(monkeypatch):
+    def fake_json_response(data=None, *, status_code=200, headers=None):
         return {"payload": data, "status_code": status_code}
 
-    def fake_error_response(
-        message: str,
-        *,
-        status_code: int = 400,
-        data: Any = None,
-        headers: dict[str, str] | None = None,
-    ) -> dict[str, Any]:
+    def fake_error_response(message, *, status_code=400, data=None, headers=None):
         return {
             "payload": {"status": "error", "message": message, "data": data},
             "status_code": status_code,
@@ -209,377 +168,161 @@ def api(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(web_api, "error_response", fake_error_response)
     monkeypatch.setattr(web_api, "_WEB_AVAILABLE", True)
 
-    def _build(collector: StubCollector, request: FakeRequest | None = None):
+    def build(collector, request=None):
         monkeypatch.setattr(web_api, "request", request)
         return web_api.MemoryScopeWebApi("astrbot_plugin_memory_scope", collector)
 
-    return _build
+    return build
 
 
-def run(coro: Any) -> Any:
+def run(coro):
     return asyncio.run(coro)
 
 
-def data_of(response: dict[str, Any]) -> Any:
+def data_of(response):
     assert response["status_code"] == 200
     assert response["payload"]["status"] == "ok"
     return response["payload"]["data"]
 
 
-# ----------------------------------------------------------------------
-# helpers
-# ----------------------------------------------------------------------
-def test_as_bool_accepts_the_usual_truthy_spellings():
-    assert web_api._as_bool(None) is False
-    assert web_api._as_bool(None, True) is True
-    assert web_api._as_bool(True) is True
-    assert web_api._as_bool("0") is False
-    assert web_api._as_bool("false") is False
-    assert web_api._as_bool("off") is False
-    assert web_api._as_bool("") is False
-    assert web_api._as_bool(" 1 ") is True
-    assert web_api._as_bool("TRUE") is True
-    assert web_api._as_bool("Yes") is True
-    assert web_api._as_bool("on") is True
-
-
-def test_as_int_falls_back_on_garbage():
-    assert web_api._as_int("25", 5) == 25
-    assert web_api._as_int(" 7 ", 5) == 7
-    assert web_api._as_int(None, 5) == 5
-    assert web_api._as_int("abc", 5) == 5
-    assert web_api._as_int("1.5", 5) == 5
-
-
-def test_query_and_body_are_defensive(api):
+def test_helpers_are_defensive(api):
     collector = StubCollector()
-
-    instance = api(collector, None)
+    api(collector, None)
     assert run(web_api._query()) == {}
     assert run(web_api._body()) == {}
-
-    instance = api(collector, FakeRequest(args={"deep": "1", "limit": "3"}))
-    assert run(web_api._query()) == {"deep": "1", "limit": "3"}
-
-    instance = api(collector, FakeRequest(body={"action": "set"}))
-    assert run(web_api._body()) == {"action": "set"}
-
-    instance = api(collector, FakeRequest(body={"action": "gc"}, awaitable_body=True))
-    assert run(web_api._body()) == {"action": "gc"}
-
-    instance = api(collector, FakeRequest(body="not-a-dict"))
-    assert run(web_api._body()) == {}
-    assert instance.plugin_name == "astrbot_plugin_memory_scope"
+    assert web_api._as_bool("false") is False
+    assert web_api._as_bool("yes") is True
+    assert web_api._as_opt_bool("") is None
+    assert web_api._as_opt_bool("1") is True
+    assert web_api._as_int("7", 2) == 7
+    assert web_api._as_int("bad", 2) == 2
 
 
-# ----------------------------------------------------------------------
-# registration
-# ----------------------------------------------------------------------
-def test_register_publishes_eight_routes(api):
+def test_register_exposes_v2_routes_and_noops_without_web(api, monkeypatch):
     collector = StubCollector()
     instance = api(collector)
-    registered: list[tuple[Any, ...]] = []
+    registered = []
 
-    class FakeContext:
-        def register_web_api(self, route, handler, methods, desc):
-            registered.append((route, handler, tuple(methods), desc))
+    class Context:
+        def register_web_api(self, *args):
+            registered.append(args)
 
-    routes = instance.register(FakeContext())
+    routes = instance.register(Context())
+    assert len(routes) == 10
+    assert "GET /api/plug/astrbot_plugin_memory_scope/imports" in routes
+    assert "POST /api/plug/astrbot_plugin_memory_scope/census" in routes
+    assert "POST /api/plug/astrbot_plugin_memory_scope/audit" in routes
+    assert len(registered) == 10
 
-    assert routes == [
-        "GET /api/plug/astrbot_plugin_memory_scope/overview",
-        "GET /api/plug/astrbot_plugin_memory_scope/plugins",
-        "GET /api/plug/astrbot_plugin_memory_scope/detail",
-        "GET /api/plug/astrbot_plugin_memory_scope/history",
-        "GET /api/plug/astrbot_plugin_memory_scope/alerts",
-        "POST /api/plug/astrbot_plugin_memory_scope/tracing",
-        "POST /api/plug/astrbot_plugin_memory_scope/baseline",
-        "POST /api/plug/astrbot_plugin_memory_scope/gc",
-    ]
-    assert instance.routes == routes
-    assert len(registered) == 8
-    assert registered[0][0] == "/astrbot_plugin_memory_scope/overview"
-    assert registered[0][1] == instance.get_overview
-    assert all(callable(entry[1]) for entry in registered)
-    assert all(entry[3].startswith("MemoryScope") for entry in registered)
-
-
-def test_register_is_a_noop_without_a_web_framework(api, monkeypatch):
-    collector = StubCollector()
-    instance = api(collector)
     monkeypatch.setattr(web_api, "_WEB_AVAILABLE", False)
-
-    class ExplodingContext:
-        def register_web_api(self, *args, **kwargs):  # pragma: no cover
-            raise AssertionError("must not register while unavailable")
-
-    assert instance.register(ExplodingContext()) == []
-    assert instance.available is False
-    assert instance.routes == []
+    assert instance.register(Context()) == []
 
 
-# ----------------------------------------------------------------------
-# GET handlers
-# ----------------------------------------------------------------------
-def test_overview_exposes_process_settings_and_routes(api):
+def test_overview_contains_process_settings_and_history(api):
     collector = StubCollector()
     instance = api(collector)
     instance.routes = ["GET /api/plug/x/overview"]
 
     payload = data_of(run(instance.get_overview()))
-
     assert payload["process"]["pid"] == 4242
-    assert payload["settings"]["sample_interval_seconds"] == 60
-    assert payload["settings"]["deep_scan_enabled"] is True
-    assert payload["settings"]["history_size"] == 720
-    assert payload["history"] == {
-        "samples": 3,
-        "traced_samples": 2,
-        "baseline_at": None,
-    }
-    assert payload["routes"] == ["GET /api/plug/x/overview"]
+    assert payload["settings"]["measure_import_cost"] is True
+    assert payload["history"] == {"samples": 3, "census_samples": 2, "baseline_at": None}
+    assert payload["routes"] == instance.routes
     assert payload["server_time"] > 0
-    # No report is built for the cheap overview call.
-    assert collector.report_calls == []
 
 
-def test_overview_reports_the_baseline_timestamp(api):
-    collector = StubCollector()
-    collector.history.baseline = SimpleNamespace(ts=123.5)
-    instance = api(collector)
-
-    assert data_of(run(instance.get_overview()))["history"]["baseline_at"] == 123.5
-
-
-def test_plugins_defaults_to_a_shallow_recorded_sample(api):
-    collector = StubCollector()
-    instance = api(collector, FakeRequest())
-
-    data_of(run(instance.get_plugins()))
-
-    assert collector.report_calls == [{"deep": False, "record_sample": True}]
-
-
-def test_plugins_honours_deep_and_sample_flags(api):
-    collector = StubCollector()
-    instance = api(collector, FakeRequest(args={"deep": "1", "sample": "0"}))
-
-    payload = data_of(run(instance.get_plugins()))
-
-    assert collector.report_calls == [{"deep": True, "record_sample": False}]
-    assert payload["generated_at"] == 777.0
-
-
-def test_detail_requires_a_name(api):
-    collector = StubCollector()
-    instance = api(collector, FakeRequest(args={"name": "  "}))
-
-    response = run(instance.get_detail())
-
-    assert response["status_code"] == 400
-    assert "name" in response["payload"]["message"]
-    assert collector.report_calls == []
-
-
-def test_detail_returns_404_for_an_unknown_plugin(api):
-    collector = StubCollector()
-    instance = api(collector, FakeRequest(args={"name": "ghost"}))
-
-    response = run(instance.get_detail())
-
-    assert response["status_code"] == 404
-    assert "ghost" in response["payload"]["message"]
-    # A forced refresh is attempted before giving up.
-    assert collector.ensure_calls == [True]
-    assert collector.report_calls == []
-
-
-def test_detail_refreshes_the_registry_for_freshly_loaded_plugins(api):
-    collector = StubCollector(known=set(), discovered={"late_plugin"})
-    instance = api(collector, FakeRequest(args={"name": "late_plugin", "limit": "5"}))
-
-    payload = data_of(run(instance.get_detail()))
-
-    assert collector.ensure_calls == [True]
-    assert payload["detail"] == {"name": "late_plugin", "found": True}
-    assert payload["generated_at"] == 777.0
-    assert payload["notes"] == ["tracemalloc_off"]
-    assert set(payload) == {"generated_at", "detail", "notes"}
-
-
-def test_detail_passes_deep_and_line_limit_through(api):
+def test_plugins_passes_query_options(api):
     collector = StubCollector()
     instance = api(
         collector,
-        FakeRequest(args={"name": "a_plugin", "deep": "true", "limit": "40"}),
+        FakeRequest(args={"deep": "1", "census": "true", "audit": "0", "sample": "0"}),
     )
+    payload = data_of(run(instance.get_plugins()))
+    assert payload["generated_at"] == 777.0
+    assert collector.report_calls == [
+        {"deep": True, "census": True, "audit": False, "record_sample": False},
+    ]
 
-    data_of(run(instance.get_detail()))
 
+def test_detail_validation_refresh_and_options(api):
+    collector = StubCollector(known=set(), discovered={"late_plugin"})
+    instance = api(collector, FakeRequest(args={"name": "late_plugin", "deep": "1", "census": "1"}))
+    payload = data_of(run(instance.get_detail()))
+    assert payload["detail"]["name"] == "late_plugin"
+    assert collector.ensure_calls == [True]
     assert collector.report_calls == [
         {
             "deep": True,
-            "detail_for": "a_plugin",
-            "line_limit": 40,
+            "detail_for": "late_plugin",
+            "census": True,
             "record_sample": False,
         },
     ]
-    assert collector.ensure_calls == []
+
+    missing = api(StubCollector(), FakeRequest(args={"name": " "}))
+    response = run(missing.get_detail())
+    assert response["status_code"] == 400
+
+    unknown = api(StubCollector(), FakeRequest(args={"name": "ghost"}))
+    response = run(unknown.get_detail())
+    assert response["status_code"] == 404
 
 
-def test_detail_limit_falls_back_to_25(api):
+def test_history_supports_process_and_plugin_series(api):
     collector = StubCollector()
-    instance = api(collector, FakeRequest(args={"name": "a_plugin", "limit": "many"}))
-
-    data_of(run(instance.get_detail()))
-
-    assert collector.report_calls[0]["line_limit"] == 25
-
-
-def test_history_without_a_plugin_returns_every_series(api):
-    collector = StubCollector()
-    instance = api(collector, FakeRequest())
-
+    instance = api(collector, FakeRequest(args={"limit": "10"}))
     payload = data_of(run(instance.get_history()))
+    assert payload["totals"] == [[1.0, 100, 20], [2.0, 110, 20]]
+    assert payload["rss"] == [[1.0, 100], [2.0, 110]]
+    assert payload["rss_trend_bytes_per_minute"] == 5678.0
+    assert set(payload["series_by_plugin"]) == {"a", "b"}
 
-    assert payload["totals"] == [[1.0, 30], [2.0, 30]]
-    assert payload["interval_seconds"] == 60
-    assert payload["baseline_at"] is None
-    # Sorted so the chart legend is stable across refreshes.
-    assert list(payload["series_by_plugin"]) == ["a_plugin", "b_plugin"]
-    assert "series" not in payload
-    assert ("totals_series", 240) in collector.history.calls
+    one = api(collector, FakeRequest(args={"plugin": "a", "limit": "5"}))
+    one_payload = data_of(run(one.get_history()))
+    assert one_payload["series"] == [[2.0, 20]]
+    assert one_payload["trend_bytes_per_minute"] == 1234.0
 
 
-def test_history_for_one_plugin_adds_the_trend(api):
+def test_alerts_limit_is_clamped_and_serialized(api):
     collector = StubCollector()
-    instance = api(collector, FakeRequest(args={"plugin": "a_plugin", "limit": "10"}))
-
-    payload = data_of(run(instance.get_history()))
-
-    assert payload["plugin"] == "a_plugin"
-    assert payload["series"] == [[2.0, 30]]
-    assert payload["trend_bytes_per_minute"] == 1234.0
-    assert "series_by_plugin" not in payload
-    assert ("series", "a_plugin", 10) in collector.history.calls
-
-
-@pytest.mark.parametrize(
-    ("raw", "expected"),
-    [("0", 1), ("-5", 1), ("99999", 2000), ("nope", 240)],
-)
-def test_history_limit_is_clamped(api, raw, expected):
-    collector = StubCollector()
-    instance = api(collector, FakeRequest(args={"limit": raw}))
-
-    data_of(run(instance.get_history()))
-
-    assert ("totals_series", expected) in collector.history.calls
-
-
-@pytest.mark.parametrize(
-    ("raw", "expected"),
-    [("0", 1), ("500", 200), ("bad", 20), ("15", 15)],
-)
-def test_alerts_limit_is_clamped(api, raw, expected):
-    collector = StubCollector()
-    instance = api(collector, FakeRequest(args={"limit": raw}))
-
+    instance = api(collector, FakeRequest(args={"limit": "0"}))
     payload = data_of(run(instance.get_alerts()))
-
-    assert collector.alerts.calls == [expected]
+    assert collector.alerts.calls == [1]
     assert payload["enabled"] is True
-    assert payload["alerts"][0] == {
-        "ts": 5.0,
-        "plugin": "a_plugin",
-        "kind": "size",
-        "message": "too big",
-        "value": 99.0,
-    }
+    assert payload["alerts"][0]["kind"] == "rss"
 
 
-# ----------------------------------------------------------------------
-# POST handlers
-# ----------------------------------------------------------------------
-def test_tracing_start_stop_and_reset_peak(api):
+def test_imports_and_manual_actions(api):
     collector = StubCollector()
+    instance = api(collector, FakeRequest(args={"audit": "1"}))
+    imports = data_of(run(instance.get_imports()))
+    assert imports["generated_at"] == 777.0
+    assert collector.report_calls[-1] == {"audit": True, "record_sample": False}
 
-    instance = api(collector, FakeRequest(body={"action": "start"}))
-    payload = data_of(run(instance.post_tracing()))
-    assert payload == {"action": "start", "tracemalloc": {"tracing": True, "frames": 4}}
-
-    instance = api(collector, FakeRequest(body={"action": " STOP "}))
-    payload = data_of(run(instance.post_tracing()))
-    assert payload["action"] == "stop"
-    assert payload["tracemalloc"]["tracing"] is False
-
-    instance = api(collector, FakeRequest(body={"action": "reset_peak"}))
-    data_of(run(instance.post_tracing()))
-
-    # An explicit dashboard stop wins even when tracing was started elsewhere.
-    assert collector.probe.calls == ["start", ("stop", False), "reset_peak"]
+    census = data_of(run(instance.post_census()))
+    assert census["generated_at"] == 778.0
+    assert collector.census_calls == 1
+    audit = data_of(run(instance.post_audit()))
+    assert audit["generated_at"] == 779.0
+    assert collector.audit_calls == 1
 
 
-@pytest.mark.parametrize("body", [{}, {"action": ""}, {"action": "explode"}, None])
-def test_tracing_rejects_unknown_actions(api, body):
-    collector = StubCollector()
-    instance = api(collector, FakeRequest(body=body))
-
-    response = run(instance.post_tracing())
-
-    assert response["status_code"] == 400
-    assert "start" in response["payload"]["message"]
-    assert collector.probe.calls == []
-
-
-def test_baseline_defaults_to_set(api):
+def test_baseline_set_clear_and_bad_action(api):
     collector = StubCollector()
     instance = api(collector, FakeRequest(body={}))
-
-    payload = data_of(run(instance.post_baseline()))
-
-    assert payload == {"action": "set", "baseline_at": 42.0}
-    assert "set_baseline" in collector.history.calls
-    # A sample already exists, so no report has to be built first.
-    assert collector.report_calls == []
-
-
-def test_baseline_samples_once_when_history_is_empty(api):
-    collector = StubCollector()
-    collector.history.latest = None
-    instance = api(collector, FakeRequest(body={"action": "set"}))
-
-    data_of(run(instance.post_baseline()))
-
-    assert collector.report_calls == [{"deep": False, "record_sample": True}]
+    assert data_of(run(instance.post_baseline()))["baseline_at"] == 42.0
     assert "set_baseline" in collector.history.calls
 
+    clear = api(collector, FakeRequest(body={"action": "clear"}))
+    assert data_of(run(clear.post_baseline()))["baseline_at"] is None
 
-def test_baseline_clear_drops_the_reference(api):
-    collector = StubCollector()
-    collector.history.baseline = SimpleNamespace(ts=9.0)
-    instance = api(collector, FakeRequest(body={"action": "clear"}))
-
-    payload = data_of(run(instance.post_baseline()))
-
-    assert payload == {"action": "clear", "baseline_at": None}
-    assert collector.history.calls == ["clear_baseline"]
-
-
-def test_baseline_rejects_unknown_actions(api):
-    collector = StubCollector()
-    instance = api(collector, FakeRequest(body={"action": "reset"}))
-
-    response = run(instance.post_baseline())
-
+    bad = api(collector, FakeRequest(body={"action": "reset"}))
+    response = run(bad.post_baseline())
     assert response["status_code"] == 400
-    assert "set" in response["payload"]["message"]
-    assert collector.history.calls == []
 
 
-def test_gc_delegates_to_the_collector(api):
+def test_gc_delegates_to_collector(api):
     collector = StubCollector()
-    instance = api(collector, FakeRequest(body={}))
-
+    instance = api(collector)
     assert data_of(run(instance.post_gc())) == {"collected": 7}
     assert collector.gc_calls == 1

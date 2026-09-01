@@ -1,25 +1,54 @@
 {
-  "auto_start_tracemalloc": {
-    "description": "AstrBot 加载完成后自动开启 tracemalloc",
-    "hint": "默认关闭。开启后只在所有插件加载完毕的钩子里启动追踪，绝不影响启动速度；但追踪本身会给每次内存分配加一条调用栈，长期开着会占额外内存并让分配变慢。按需用页面按钮或 /mem trace on 更省。要统计插件导入期的内存，请以 PYTHONTRACEMALLOC=12 启动 AstrBot。",
+  "measure_import_cost": {
+    "description": "统计各插件的导入成本（推荐保持开启）",
+    "hint": "在插件构造函数里给 builtins.__import__ 包一层，记录每个模块首次导入前后的 RSS 差和耗时，AstrBot 加载完成后立刻卸载。单次首导入约 2 微秒，启动期约 3400 次首导入合计 30 毫秒以内，不追踪任何内存分配。注意：只能覆盖 MemoryScope 之后加载的插件；运行时安装/重载本插件时这项无效，需重启 AstrBot 才有完整数据。",
+    "type": "bool",
+    "default": true
+  },
+  "import_hook_max_overhead_ms": {
+    "description": "导入钩子自身开销上限（毫秒）",
+    "hint": "钩子会累计自己花掉的时间，一旦超过该上限就自动摘掉并把结果标记为 degraded，保证监控插件不会变成性能问题本身。0 表示不限制。",
+    "type": "float",
+    "default": 5000
+  },
+  "dep_audit_enabled": {
+    "description": "启用重依赖顶层导入审计",
+    "hint": "用 AST 静态扫描各插件源码，找出在模块顶层直接 import 的重依赖（faiss、sympy、pymupdf、matplotlib 等），并给出改成惰性导入能省多少内存。纯读源码，不加载任何模块，也不受加载顺序影响，是覆盖全部插件的唯一手段。",
+    "type": "bool",
+    "default": true
+  },
+  "dep_audit_max_files": {
+    "description": "单次审计最多扫描的源码文件数",
+    "hint": "超出会标记为“已截断”。默认值足够覆盖百来个常规插件。",
+    "type": "int",
+    "default": 400
+  },
+  "dep_audit_time_budget_ms": {
+    "description": "单次审计时间上限（毫秒）",
+    "type": "int",
+    "default": 2000
+  },
+  "census_enabled": {
+    "description": "启用对象归属普查（默认关闭，会造成停顿）",
+    "hint": "遍历 gc.get_objects() 并按 type(obj).__module__ 把存活对象归到插件名下，是唯一能反映运行时（而非导入期）内存归属的手段。代价实打实：280 万对象的进程需要一次约 22 MB 的临时列表，并把已换出的页全部读回内存，全量归类约 0.5 秒。小内存机器请保持关闭，需要时用 /mem census 或页面按钮临时跑一次。",
     "type": "bool",
     "default": false
   },
-  "auto_start_min_available_mb": {
-    "description": "自动开启追踪所需的最低系统可用内存（MB）",
-    "hint": "系统可用内存低于该值时跳过自动开启，只写一条 WARNING，避免监控插件自己把机器压进 swap。0 表示不检查。",
-    "type": "float",
-    "default": 512
-  },
-  "tracemalloc_frames": {
-    "description": "tracemalloc 记录的调用栈深度（帧）",
-    "hint": "越深归因越准确，但每个内存块的额外开销也越大（开销与帧数近似成正比）。归因依赖在调用栈里找到插件自己的代码帧，1 帧几乎无法归因，建议 8~16。",
+  "census_sample_rate": {
+    "description": "普查抽样率（每 N 个对象取 1 个）",
+    "hint": "1 表示全量。10 表示 1/10 抽样，耗时降到约 1/10（60 万对象 0.49 秒 → 19 毫秒），结果按倍数放大，只适合看比例不适合看绝对值。",
     "type": "int",
-    "default": 12
+    "default": 10
+  },
+  "census_time_budget_ms": {
+    "description": "单次普查时间上限（毫秒）",
+    "hint": "超时提前结束并标记为“已截断”，结果偏小。",
+    "type": "int",
+    "default": 4000
   },
   "sample_interval_seconds": {
     "description": "后台采样间隔（秒）",
-    "hint": "用于绘制趋势曲线和触发增长告警。范围 10~3600。单次采样过慢时插件会自动临时放大间隔（最多 8 倍）。",
+    "hint": "用于绘制 RSS 趋势曲线和触发增长告警。采样本身只读一次 /proc/self/statm（约 4 微秒），不做任何遍历。范围 10~3600。",
     "type": "int",
     "default": 60
   },
@@ -31,7 +60,7 @@
   },
   "deep_scan_enabled": {
     "description": "启用引用图深度扫描",
-    "hint": "遍历插件实例与模块的引用图，统计其实际保留的对象大小（独占/共享）。开销明显，只在手动点击或 /mem deep 时执行，不参与后台采样。",
+    "hint": "从插件实例与模块出发用 gc.get_referents 遍历引用图，统计其实际保留的对象大小（独占/共享）。约 7.4 微秒/对象，只在手动点击或 /mem deep 时执行，不参与后台采样。结果是下界。",
     "type": "bool",
     "default": true
   },
@@ -57,15 +86,27 @@
     "type": "bool",
     "default": false
   },
+  "alert_rss_mb": {
+    "description": "进程 RSS 告警阈值（MB）",
+    "hint": "0 表示不告警。这是最可靠的告警口径：RSS 是操作系统真正记账的数字。小内存机器建议设成物理内存的 60%~70%。",
+    "type": "float",
+    "default": 0
+  },
+  "alert_rss_growth_mb_per_hour": {
+    "description": "进程 RSS 增长速率告警阈值（MB/小时）",
+    "hint": "0 表示不告警。基于最近采样的最小二乘斜率，用于发现整体泄漏。",
+    "type": "float",
+    "default": 0
+  },
   "alert_plugin_mb": {
-    "description": "单插件归因内存告警阈值（MB）",
-    "hint": "0 表示不告警。超过阈值时写入一条 WARNING 日志，并显示在页面告警列表中。",
+    "description": "单插件普查内存告警阈值（MB）",
+    "hint": "0 表示不告警。只在对象普查开启时才有数据，否则该规则永不触发。",
     "type": "float",
     "default": 0
   },
   "alert_growth_mb_per_hour": {
     "description": "单插件增长速率告警阈值（MB/小时）",
-    "hint": "0 表示不告警。基于最近采样的最小二乘斜率，用于发现疑似内存泄漏。",
+    "hint": "0 表示不告警。同样依赖对象普查的历史样本。",
     "type": "float",
     "default": 0
   },
@@ -76,8 +117,14 @@
     "default": true
   },
   "command_top_n": {
-    "description": "/mem top 默认显示的插件数量",
+    "description": "/mem 命令默认显示的条目数量",
     "type": "int",
     "default": 8
+  },
+  "registry_ttl_seconds": {
+    "description": "插件清单刷新间隔（秒）",
+    "hint": "页面和命令访问时按此间隔刷新 AstrBot 插件清单，避免每次查看都遍历注册表。设为 0 可在调试时每次刷新；通常保持默认值即可。",
+    "type": "float",
+    "default": 30
   }
 }

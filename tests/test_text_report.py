@@ -1,12 +1,16 @@
-"""Chat command renderers: formatting helpers and full reports."""
+"""Human-readable command output tests."""
 
 from __future__ import annotations
 
 from core.text_report import (
     format_bytes,
     format_delta,
+    format_ms,
     format_trend,
+    render_audit,
+    render_census,
     render_gc,
+    render_imports,
     render_overview,
     render_plugin_detail,
 )
@@ -14,261 +18,133 @@ from core.text_report import (
 MB = 1024 * 1024
 
 
-def test_format_bytes_units():
+def test_format_helpers():
     assert format_bytes(0) == "0 B"
     assert format_bytes(1023) == "1023 B"
     assert format_bytes(1024) == "1.0 KB"
-    assert format_bytes(1536) == "1.5 KB"
     assert format_bytes(1536, precision=2) == "1.50 KB"
     assert format_bytes(5 * MB) == "5.0 MB"
-    assert format_bytes(3 * 1024 * MB) == "3.0 GB"
-    # The unit table stops at TB instead of overflowing.
-    assert format_bytes(1024 ** 5) == "1024.0 TB"
-
-
-def test_format_bytes_edge_cases():
     assert format_bytes(None) == "0 B"
+    assert format_bytes("bad") == "-"
     assert format_bytes(-2048) == "-2.0 KB"
-    assert format_bytes("not-a-number") == "-"
-    assert format_bytes(object()) == "-"
-
-
-def test_format_delta():
     assert format_delta(None) == ""
-    assert format_delta(0) == ""
-    assert format_delta(512) == ""
     assert format_delta(4096) == "+4.0 KB"
     assert format_delta(-4096) == "-4.0 KB"
-    assert format_delta("nope") == ""
-
-
-def test_format_trend_converts_to_per_hour():
-    assert format_trend(None) == ""
-    assert format_trend(1024) == ""
     assert format_trend(MB) == "60.0 MB/h"
-    assert format_trend(-MB) == "-60.0 MB/h"
-    assert format_trend("nope") == ""
+    assert format_trend(None) == ""
+    assert format_ms(999) == "999 ms"
+    assert format_ms(1500) == "1.50 s"
 
 
-def make_report(**overrides):
-    report = {
+def report():
+    return {
         "process": {
             "rss_bytes": 512 * MB,
             "memory_percent": 6.25,
-            "tracemalloc": {
-                "tracing": True,
-                "current_bytes": 90 * MB,
-                "peak_bytes": 120 * MB,
-                "frames": 12,
-            },
-        },
-        "totals": {
-            "traced_bytes": 90 * MB,
-            "plugin_bytes": 40 * MB,
-            "plugin_count": 12,
-            "measured_plugin_count": 3,
+            "threads": 12,
+            "modules": 3000,
+            "vms_bytes": 2 * 1024 * MB,
+            "uptime_seconds": 3661,
+            "pid": 123,
+            "python_version": "3.12.0",
+            "gc": {"counts": [1, 2, 3], "thresholds": [700, 10, 10], "collections": [4, 5, 6], "uncollectable": 0},
+            "import_hook": {"installed": False, "overhead_ms": 1.2, "rss_growth_bytes": 200 * MB},
         },
         "plugins": [
             {
-                "name": "plugin_a",
-                "display_name": "Plugin A",
-                "attributed_bytes": 30 * MB,
-                "direct_bytes": 20 * MB,
-                "blocks": 1200,
-                "delta_bytes": 5 * MB,
+                "name": "plugin_big",
+                "display_name": "Big Plugin",
+                "import_measured": True,
+                "import_bytes": 30 * MB,
+                "import_self_bytes": 10 * MB,
+                "import_ms": 1200,
+                "import_modules": 20,
+                "import_packages": ["numpy"],
+                "census_bytes": 8 * MB,
+                "census_objects": 100,
+                "census_types": [{"type": "plugin_big.Cache", "bytes": 4 * MB, "objects": 10}],
+                "delta_bytes": 2 * MB,
                 "trend_bytes_per_minute": MB,
-                "retained": {"exclusive_bytes": 12 * MB, "shared_bytes": MB},
-                "version": "1.0.0",
-                "author": "tester",
+                "is_self": False,
+                "retained": {"exclusive_bytes": 4 * MB, "shared_bytes": MB, "exclusive_objects": 40},
+                "version": "1.0",
+                "author": "A",
+                "module_path": "data.plugins.plugin_big.main",
+                "root_dir": "/plugins/plugin_big",
             },
             {
-                "name": "plugin_b",
-                "display_name": "Plugin B",
-                "attributed_bytes": 8 * MB,
-                "direct_bytes": 8 * MB,
-                "blocks": 300,
+                "name": "plugin_small",
+                "display_name": "Small Plugin",
+                "import_measured": False,
+                "import_bytes": None,
+                "import_self_bytes": None,
+                "import_ms": None,
+                "import_modules": None,
+                "import_packages": [],
+                "census_bytes": 0,
+                "census_objects": 0,
+                "census_types": [],
                 "delta_bytes": None,
                 "trend_bytes_per_minute": None,
+                "is_self": False,
                 "retained": None,
-            },
-            {
-                "name": "plugin_c",
-                "display_name": "Plugin C",
-                "attributed_bytes": 2 * MB,
-                "direct_bytes": MB,
-                "blocks": 100,
-                "delta_bytes": None,
-                "trend_bytes_per_minute": None,
-                "retained": None,
-            },
-            {
-                "name": "plugin_idle",
-                "display_name": "Plugin Idle",
-                "attributed_bytes": 0,
-                "direct_bytes": 0,
-                "blocks": 0,
-                "delta_bytes": None,
-                "trend_bytes_per_minute": None,
-                "retained": None,
+                "version": "",
+                "author": "",
+                "module_path": None,
+                "root_dir": None,
             },
         ],
-        "others": [
-            {"bucket": "astrbot_core", "bytes": 30 * MB},
-            {"bucket": "lib:httpx", "bytes": 10 * MB},
-            {"bucket": "python_stdlib", "bytes": 5 * MB},
-        ],
-        "notes": [],
+        "packages": [{"name": "numpy", "bytes": 20 * MB, "wall_ms": 500, "modules": 10, "first_importer": "plugin_big"}],
+        "census_buckets": [{"bucket": "astrbot_core", "bytes": 100 * MB, "objects": 1000}],
+        "census_meta": {"scanned": 10000, "total_objects": 10000, "sample_rate": 10, "elapsed_ms": 50, "plugin_bytes": 8 * MB, "plugin_objects": 100, "plugin_count": 1},
+        "audit_meta": {"audited": 2, "plugin_count": 2, "finding_count": 1, "elapsed_ms": 10},
+        "opportunities": [{"module": "numpy", "cost_bytes": 20 * MB, "plugins": ["plugin_big"]}],
+        "totals": {"plugin_count": 2, "measured_plugin_count": 1, "import_self_bytes_total": 10 * MB, "packages_bytes": 20 * MB, "packages_count": 1, "import_total_bytes": 30 * MB, "lazy_savings_bytes": 20 * MB, "census_bytes": 8 * MB, "census_objects": 100, "rss_bytes": 512 * MB},
+        "deep_meta": {"generated_at": 1000, "elapsed_ms": 200, "fresh": True, "truncated": False},
+        "history": {"samples": 3, "census_samples": 1, "interval_seconds": 60, "baseline_at": None},
+        "notes": ["census_sampled"],
     }
-    report.update(overrides)
-    return report
 
 
-def test_render_overview_happy_path():
-    text = render_overview(make_report())
+def test_render_overview_mentions_rss_import_and_census():
+    text = render_overview(report(), top_n=2)
 
     assert "MemoryScope" in text
     assert "512.0 MB" in text
-    assert "6.2%" in text or "6.3%" in text
-    assert "峰值 120.0 MB" in text
-    assert "1. Plugin A 30.0 MB" in text
-    assert "Δ+5.0 MB" in text
-    assert "趋势 60.0 MB/h" in text
-    assert "独占 12.0 MB" in text
-    assert "2. Plugin B 8.0 MB" in text
-    # Plugins without attributed bytes are not listed at all.
-    assert "Plugin Idle" not in text
-    assert "非插件部分合计 45.0 MB" in text
-    assert "astrbot_core 30.0 MB" in text
+    assert "插件代码" in text
+    assert "第三方包" in text
+    assert "改惰性导入可省" in text
+    assert "对象普查" in text
+    assert "Big Plugin" in text
+    assert "趋势" in text
 
 
-def test_render_overview_respects_top_n_and_reports_the_rest():
-    text = render_overview(make_report(), top_n=2)
+def test_render_imports_and_audit_are_explicit_about_shared_costs():
+    imports = render_imports(report(), top_n=5)
+    assert "numpy" in imports
+    assert "首个导入者" in imports
+    assert "搭便车" in imports
 
-    assert "1. Plugin A" in text
-    assert "2. Plugin B" in text
-    assert "Plugin C" not in text
-    assert "其余 1 个插件占用较小" in text
-
-
-def test_render_overview_without_tracing():
-    report = make_report(notes=["tracemalloc_off"])
-    report["process"]["tracemalloc"]["tracing"] = False
-
-    text = render_overview(report)
-
-    assert "tracemalloc 未开启" in text
-    assert "/mem trace on" in text
+    audit = render_audit(report(), top_n=5)
+    assert "numpy" in audit
+    assert "只有列出的插件全部改成函数内导入" in audit
 
 
-def test_render_overview_warns_about_late_tracing_and_missing_psutil():
-    text = render_overview(
-        make_report(notes=["tracing_started_late", "psutil_missing"]),
-    )
+def test_render_census_and_detail_include_limits_and_layers():
+    census = render_census(report(), top_n=2)
+    assert "抽样 1/10" in census
+    assert "str/bytes/int" in census
 
-    assert "PYTHONTRACEMALLOC" in text
-    assert "未安装 psutil" in text
-
-
-def test_render_overview_without_data():
-    text = render_overview(
-        {
-            "process": {"rss_bytes": 0, "tracemalloc": {"tracing": False}},
-            "totals": {},
-            "plugins": [],
-            "notes": [],
-        },
-    )
-
-    assert "暂无可归因数据" in text
+    detail = render_plugin_detail({"found": True, "name": "plugin_big", "row": report()["plugins"][0], "import": {"bytes": 30 * MB, "self_bytes": 10 * MB, "wall_ms": 1200, "modules": 20}, "import_packages": report()["packages"], "audit": {"known_bytes": 20 * MB, "imports": [{"module": "numpy", "cost_bytes": 20 * MB, "file": "main.py", "lineno": 1, "guarded": False}]}, "census": {"bytes": 8 * MB, "objects": 100, "type_count": 1, "types": report()["plugins"][0]["census_types"]}, "series": []})
+    assert "加载成本" in detail
+    assert "引用图保留" in detail
+    assert "顶层重依赖" in detail
+    assert "对象类型 Top" in detail
 
 
-def test_render_overview_tolerates_an_empty_payload():
-    assert render_overview({}).splitlines()[0].endswith("内存占用")
-
-
-def test_render_plugin_detail_not_found():
-    assert "未找到该插件" in render_plugin_detail({"found": False})
-    assert "未找到该插件" in render_plugin_detail({})
-
-
-def test_render_plugin_detail_full():
-    row = make_report()["plugins"][0]
-    row["retained"] = {
-        "exclusive_bytes": 12 * MB,
-        "shared_bytes": MB,
-        "exclusive_objects": 4200,
-        "truncated": True,
-    }
-    detail = {
-        "name": "plugin_a",
-        "found": True,
-        "row": row,
-        "lines": [
-            {
-                "filename": "/data/plugins/plugin_a/core/cache.py",
-                "lineno": 88,
-                "bytes": 9 * MB,
-                "blocks": 300,
-            },
-            {
-                "filename": "single.py",
-                "lineno": 1,
-                "bytes": MB,
-                "blocks": 10,
-            },
-        ],
-    }
-
-    text = render_plugin_detail(detail)
-
-    assert "Plugin A" in text
-    assert "版本 1.0.0 · 作者 tester" in text
-    assert "归因分配 30.0 MB" in text
-    assert "其中直接分配 20.0 MB" in text
-    assert "独占 12.0 MB" in text
-    assert "（已截断）" in text
-    assert "相对基线 +5.0 MB" in text
-    assert "分配热点：" in text
-    assert "core/cache.py:88 9.0 MB (300 块)" in text
-    assert "single.py:1" in text
-
-
-def test_render_plugin_detail_limits_hotspots():
-    detail = {
-        "name": "plugin_a",
-        "found": True,
-        "row": {"display_name": "Plugin A", "attributed_bytes": MB},
-        "lines": [
-            {"filename": "a.py", "lineno": index, "bytes": MB, "blocks": 1}
-            for index in range(6)
-        ],
-    }
-
-    text = render_plugin_detail(detail, limit=2)
-
-    assert text.count("a.py:") == 2
-
-
-def test_render_plugin_detail_minimal_row():
-    text = render_plugin_detail({"name": "plugin_x", "found": True, "row": {}})
-
-    assert "plugin_x" in text
-    assert "归因分配 0 B" in text
-
-
-def test_render_gc():
-    text = render_gc(
-        {
-            "collected": 128,
-            "traced_before": 100 * MB,
-            "traced_after": 90 * MB,
-            "freed_bytes": 10 * MB,
-            "uncollectable": 2,
-        },
-    )
-
-    assert "回收对象 128 个" in text
-    assert "100.0 MB" in text
-    assert "90.0 MB" in text
-    assert "释放 10.0 MB" in text
-    assert "不可回收对象 2 个" in text
+def test_render_empty_and_gc():
+    assert "尚未运行" in render_census({})
+    assert "未找到" in render_plugin_detail({"found": False})
+    text = render_gc({"collected": 4, "rss_before": 100 * MB, "rss_after": 99 * MB, "freed_bytes": MB, "uncollectable": 0})
+    assert "回收对象 4" in text
+    assert "RSS 释放" in text

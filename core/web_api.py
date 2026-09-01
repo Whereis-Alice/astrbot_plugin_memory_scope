@@ -2,7 +2,7 @@
 
 AstrBot already gates ``/api/plug/...`` behind the dashboard session, so these
 routes inherit the dashboard authentication and add no auth of their own.  Every
-handler is read-only except the explicit tracing/baseline/GC actions.
+handler is read-only except the explicit census/audit/baseline/GC actions.
 """
 
 from __future__ import annotations
@@ -64,7 +64,12 @@ def ok(data: Any) -> Any:
 async def _query() -> dict[str, str]:
     if request is None:
         return {}
-    args = getattr(request, "args", None)
+    # AstrBot's current neutral request exposes ``query``; older Quart
+    # compatibility contexts expose ``args``.  Support both without importing
+    # either framework into the rest of the plugin.
+    args = getattr(request, "query", None)
+    if args is None:
+        args = getattr(request, "args", None)
     if args is None:
         return {}
     try:
@@ -76,6 +81,16 @@ async def _query() -> dict[str, str]:
 async def _body() -> dict[str, Any]:
     if request is None:
         return {}
+    neutral_json = getattr(request, "json", None)
+    if callable(neutral_json):
+        try:
+            result = neutral_json(default={})
+        except TypeError:
+            result = neutral_json()
+        if inspect.isawaitable(result):
+            result = await result
+        if isinstance(result, dict):
+            return result
     getter = getattr(request, "get_json", None)
     if callable(getter):
         try:
@@ -100,6 +115,14 @@ def _as_bool(value: Any, default: bool = False) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _as_opt_bool(value: Any) -> bool | None:
+    """``None`` when the parameter is absent, so the caller keeps its default."""
+
+    if value is None or str(value).strip() == "":
+        return None
+    return _as_bool(value, False)
+
+
 def _as_int(value: Any, default: int) -> int:
     try:
         return int(str(value).strip())
@@ -120,7 +143,8 @@ class MemoryScopeWebApi:
         return _WEB_AVAILABLE
 
     def register(self, context: Any) -> list[str]:
-        if not _WEB_AVAILABLE:
+        register = getattr(context, "register_web_api", None)
+        if not _WEB_AVAILABLE or not callable(register):
             return []
         endpoints: list[tuple[str, Callable[..., Any], list[str], str]] = [
             ("overview", self.get_overview, ["GET"], "MemoryScope 进程概览"),
@@ -128,14 +152,16 @@ class MemoryScopeWebApi:
             ("detail", self.get_detail, ["GET"], "MemoryScope 单插件分配明细"),
             ("history", self.get_history, ["GET"], "MemoryScope 采样历史"),
             ("alerts", self.get_alerts, ["GET"], "MemoryScope 告警记录"),
-            ("tracing", self.post_tracing, ["POST"], "MemoryScope 开关 tracemalloc"),
+            ("imports", self.get_imports, ["GET"], "MemoryScope 加载成本与依赖审计"),
+            ("census", self.post_census, ["POST"], "MemoryScope 手动对象普查"),
+            ("audit", self.post_audit, ["POST"], "MemoryScope 手动依赖审计"),
             ("baseline", self.post_baseline, ["POST"], "MemoryScope 基线管理"),
             ("gc", self.post_gc, ["POST"], "MemoryScope 手动触发 GC"),
         ]
         registered: list[str] = []
         for suffix, handler, methods, desc in endpoints:
             route = f"/{self.plugin_name}/{suffix}"
-            context.register_web_api(route, handler, methods, desc)
+            register(route, handler, methods, desc)
             registered.append(f"{'/'.join(methods)} /api/plug{route}")
         self.routes = registered
         return registered
@@ -150,18 +176,23 @@ class MemoryScopeWebApi:
                 "process": self.collector.process_stats(),
                 "settings": {
                     "sample_interval_seconds": settings.sample_interval_seconds,
-                    "auto_start_tracemalloc": settings.auto_start_tracemalloc,
-                    "auto_start_min_available_mb": settings.auto_start_min_available_mb,
+                    "measure_import_cost": settings.measure_import_cost,
+                    "census_enabled": settings.census_enabled,
+                    "census_sample_rate": settings.census_sample_rate,
+                    "census_time_budget_ms": settings.census_time_budget_ms,
+                    "dep_audit_enabled": settings.dep_audit_enabled,
                     "deep_scan_enabled": settings.deep_scan_enabled,
                     "deep_scan_time_budget_ms": settings.deep_scan_time_budget_ms,
                     "history_size": settings.history_size,
                     "alert_plugin_mb": settings.alert_plugin_mb,
                     "alert_growth_mb_per_hour": settings.alert_growth_mb_per_hour,
+                    "alert_rss_mb": settings.alert_rss_mb,
+                    "alert_rss_growth_mb_per_hour": settings.alert_rss_growth_mb_per_hour,
                 },
                 "history": {
                     "samples": self.collector.history.count(),
-                    "traced_samples": len(
-                        self.collector.history.traced_samples(),
+                    "census_samples": len(
+                        self.collector.history.census_samples(),
                     ),
                     "baseline_at": (
                         self.collector.history.baseline.ts
@@ -176,11 +207,17 @@ class MemoryScopeWebApi:
 
     async def get_plugins(self) -> Any:
         params = await _query()
-        deep = _as_bool(params.get("deep"), False)
-        report = await self.collector.build_report(
-            deep=deep,
-            record_sample=_as_bool(params.get("sample"), True),
-        )
+        kwargs: dict[str, Any] = {
+            "deep": _as_bool(params.get("deep"), False),
+            "record_sample": _as_bool(params.get("sample"), True),
+        }
+        census = _as_opt_bool(params.get("census"))
+        audit = _as_opt_bool(params.get("audit"))
+        if census is not None:
+            kwargs["census"] = census
+        if audit is not None:
+            kwargs["audit"] = audit
+        report = await self.collector.build_report(**kwargs)
         return ok(report)
 
     async def get_detail(self) -> Any:
@@ -192,12 +229,18 @@ class MemoryScopeWebApi:
             self.collector.ensure_registry(force=True)
             if self.collector.registry.get(name) is None:
                 return error_response(f"未找到插件 {name}", status_code=404)
-        report = await self.collector.build_report(
-            deep=_as_bool(params.get("deep"), False),
-            detail_for=name,
-            line_limit=_as_int(params.get("limit"), 25),
-            record_sample=False,
-        )
+        kwargs: dict[str, Any] = {
+            "deep": _as_bool(params.get("deep"), False),
+            "detail_for": name,
+            "record_sample": False,
+        }
+        census = _as_opt_bool(params.get("census"))
+        audit = _as_opt_bool(params.get("audit"))
+        if census is not None:
+            kwargs["census"] = census
+        if audit is not None:
+            kwargs["audit"] = audit
+        report = await self.collector.build_report(**kwargs)
         return ok(
             {
                 "generated_at": report["generated_at"],
@@ -211,10 +254,22 @@ class MemoryScopeWebApi:
         limit = max(1, min(2000, _as_int(params.get("limit"), 240)))
         plugin = (params.get("plugin") or "").strip()
         history = self.collector.history
+        latest = getattr(history, "latest", None)
+        rss_delta_fn = getattr(history, "rss_delta", None)
         data: dict[str, Any] = {
             "totals": history.totals_series(limit),
-            "traced_samples": len(history.traced_samples(limit)),
+            "rss": history.rss_series(limit),
+            "census_samples": len(history.census_samples(limit)),
+            "rss_trend_bytes_per_minute": history.rss_trend_bytes_per_minute(),
             "baseline_at": history.baseline.ts if history.baseline else None,
+            "baseline_rss_bytes": (
+                history.baseline.rss_bytes if history.baseline else None
+            ),
+            "rss_delta_bytes": (
+                rss_delta_fn(latest.rss_bytes)
+                if latest is not None and callable(rss_delta_fn)
+                else None
+            ),
             "interval_seconds": self.collector.settings.sample_interval_seconds,
         }
         if plugin:
@@ -250,22 +305,58 @@ class MemoryScopeWebApi:
             },
         )
 
-    async def post_tracing(self) -> Any:
-        body = await _body()
-        action = str(body.get("action") or "").strip().lower()
-        probe = self.collector.probe
-        if action == "start":
-            probe.start()
-        elif action == "stop":
-            probe.stop(only_if_started_by_plugin=False)
-        elif action == "reset_peak":
-            probe.reset_peak()
-        else:
-            return error_response(
-                "action 必须是 start / stop / reset_peak",
-                status_code=400,
-            )
-        return ok({"action": action, "tracemalloc": probe.status()})
+    async def get_imports(self) -> Any:
+        params = await _query()
+        report = await self.collector.build_report(
+            audit=_as_opt_bool(params.get("audit")),
+            record_sample=False,
+        )
+        return ok(
+            {
+                "generated_at": report["generated_at"],
+                "import_hook": (report.get("process") or {}).get("import_hook"),
+                "packages": report.get("packages"),
+                "opportunities": report.get("opportunities"),
+                "audit_meta": report.get("audit_meta"),
+                "totals": report.get("totals"),
+                "notes": report.get("notes"),
+            },
+        )
+
+    async def post_census(self) -> Any:
+        """Run one object census on demand.
+
+        Never automatic by default: walking the GC heap touches every tracked
+        object, which faults swapped-out pages back in and stalls for as long
+        as it takes.  The user asking for it is the consent.
+        """
+
+        report = await self.collector.census_now()
+        return ok(
+            {
+                "generated_at": report["generated_at"],
+                "census_meta": report.get("census_meta"),
+                "census_buckets": report.get("census_buckets"),
+                "plugins": report.get("plugins"),
+                "totals": report.get("totals"),
+                "notes": report.get("notes"),
+            },
+        )
+
+    async def post_audit(self) -> Any:
+        """Re-scan plugin sources for heavy module-level imports."""
+
+        report = await self.collector.audit_now()
+        return ok(
+            {
+                "generated_at": report["generated_at"],
+                "audit_meta": report.get("audit_meta"),
+                "opportunities": report.get("opportunities"),
+                "plugins": report.get("plugins"),
+                "totals": report.get("totals"),
+                "notes": report.get("notes"),
+            },
+        )
 
     async def post_baseline(self) -> Any:
         body = await _body()

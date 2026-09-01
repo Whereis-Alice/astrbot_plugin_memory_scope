@@ -1,182 +1,272 @@
 {
   "metadata": {
-    "display_name": "MemoryScope 内存分析",
-    "description": "按插件维度统计 AstrBot 的内存占用：tracemalloc 归因、引用图保留量、趋势与泄漏告警。"
+    "display_name": "MemoryScope 内存观察",
+    "description": "用轻量探针观察 AstrBot 进程 RSS、插件导入成本、运行时对象与增长趋势。"
   },
   "pages": {
     "memory": {
-      "title": "MemoryScope 内存分析",
-      "desc": "按插件查看内存归因、保留量、增长趋势与告警",
+      "title": "MemoryScope 内存观察",
+      "desc": "用轻量探针观察进程、插件导入成本与运行时对象",
       "tab": {
         "overview": "总览",
-        "plugins": "插件占用",
+        "plugins": "插件",
+        "imports": "导入成本",
+        "audit": "依赖审计",
+        "census": "对象普查",
         "alerts": "告警",
         "help": "指标说明"
       },
       "action": {
         "refresh": "刷新",
-        "deep": "深度扫描",
+        "deep": "引用图扫描",
         "baselineSet": "设为基线",
         "baselineClear": "清除基线",
-        "gc": "强制 GC",
-        "close": "关闭",
-        "traceOn": "开启追踪",
-        "traceOff": "关闭追踪",
-        "resetPeak": "重置峰值",
-        "copy": "复制"
+        "gc": "手动 GC",
+        "audit": "重新审计",
+        "census": "运行一次",
+        "close": "关闭"
       },
-      "auto": {
-        "label": "自动刷新",
-        "off": "关闭"
-      },
+      "auto": { "label": "自动刷新", "off": "关闭" },
+      "skin": { "label": "主题", "auto": "跟随 Dashboard", "dark": "深色", "light": "浅色" },
       "card": {
-        "process": "进程内存",
-        "tracemalloc": "已跟踪内存",
-        "plugins": "插件合计",
-        "gc": "垃圾回收"
+        "rss": "进程 RSS",
+        "composition": "内存构成",
+        "compositionSub": "匿名页是 RSS 的主体；换出页另计",
+        "import": "加载期导入",
+        "hookRunning": "导入记录仍在进行",
+        "hookDone": "启动期记录已结束",
+        "census": "对象普查",
+        "censusMeasured": "按类型模块归属估算",
+        "censusOff": "默认关闭，避免扫描大堆",
+        "plugins": "插件清单",
+        "runtime": "运行状态"
       },
       "metric": {
-        "vms": "VMS 虚拟内存",
-        "threads": "线程数",
-        "uptime": "运行时长",
-        "peak": "峰值",
-        "frames": "栈深度",
-        "pluginShare": "占已跟踪比例",
-        "measured": "有数据插件",
-        "gcCounts": "各代待回收",
-        "gcCollections": "各代回收次数",
-        "uncollectable": "不可回收对象",
-        "trackedObjects": "GC 跟踪对象",
-        "samples": "采样点",
-        "tracedSamples": "含归因",
-        "interval": "采样间隔",
-        "baselineAt": "基线时间",
-        "pid": "进程 PID",
-        "python": "Python"
+        "vms": "虚拟内存",
+        "swap": "已换出",
+        "baselineDelta": "相对基线",
+        "anon": "匿名页",
+        "file": "文件页",
+        "shmem": "共享内存",
+        "cgroup": "容器额度",
+        "systemShare": "占系统",
+        "pluginCode": "插件代码",
+        "packages": "第三方包",
+        "hookCost": "钩子开销",
+        "censusObjects": "对象数",
+        "censusTime": "扫描耗时",
+        "censusRate": "抽样率",
+        "measured": "有导入记录",
+        "plugins": "个插件",
+        "modules": "模块",
+        "importCoverage": "导入覆盖",
+        "history": "历史采样",
+        "gcCounts": "GC 代计数",
+        "uncollectable": "不可回收",
+        "totalImport": "导入账本",
+        "hookWindow": "记录窗口",
+        "calls": "导入调用",
+        "coverage": "插件覆盖",
+        "packagesCount": "包数量",
+        "status": "状态"
       },
-      "trace": {
-        "on": "tracemalloc 已开启",
-        "off": "tracemalloc 未开启",
-        "offHint": "未开启内存追踪时无法按插件归因，点击右侧按钮开启。",
-        "late": "追踪在插件加载之后才启动",
-        "lateHint": "插件导入阶段已分配的内存不会被计入，各插件的数值会偏小。以 PYTHONTRACEMALLOC=12 启动 AstrBot 可获得完整数据。",
-        "full": "追踪覆盖插件导入阶段，数据完整。"
+      "status": {
+        "unavailable": "未提供",
+        "notRun": "未运行",
+        "degraded": "已降级",
+        "running": "运行中",
+        "done": "已完成",
+        "off": "无记录",
+        "truncated": "已截断",
+        "complete": "完成",
+        "unknown": "未知",
+        "loading": "加载中…"
+      },
+      "chart": {
+        "rssTitle": "进程 RSS 趋势",
+        "topTitle": "当前重点插件",
+        "empty": "暂无历史数据；后台采样后会出现曲线。",
+        "points": "个点",
+        "noCensusRows": "普查已运行，但没有识别到插件对象",
+        "noImportRows": "没有可用的导入记录",
+        "topCensusCaption": "按存活对象浅层大小",
+        "topImportCaption": "按启动期 RSS 差分；不是当前独占占用"
+      },
+      "breakdown": {
+        "title": "对象普查来源",
+        "notRun": "对象普查默认关闭；运行一次后才有来源分布。",
+        "desc": "这里只显示被 GC 跟踪且能按类型模块归类的对象，不等于 RSS。",
+        "empty": "没有其他对象"
+      },
+      "probe": {
+        "title": "探针状态",
+        "import": "导入成本",
+        "census": "对象普查",
+        "audit": "依赖审计",
+        "deep": "引用图扫描",
+        "manual": "仅手动执行",
+        "scanned": "个插件"
       },
       "col": {
         "plugin": "插件",
-        "attributed": "归因分配",
-        "direct": "直接分配",
-        "exclusive": "独占保留",
-        "shared": "共享保留",
+        "import": "导入成本",
+        "census": "对象普查",
         "objects": "对象数",
-        "delta": "Δ 基线",
+        "retained": "引用图保留",
         "trend": "增长趋势",
-        "share": "占比",
-        "blocks": "内存块",
-        "chart": "近期曲线"
+        "chart": "近期曲线",
+        "package": "包",
+        "bytes": "RSS 差分",
+        "modules": "模块",
+        "importer": "首个导入者",
+        "gross": "总成本",
+        "self": "自身模块",
+        "packages": "包数"
       },
       "table": {
         "search": "搜索插件名…",
-        "empty": "暂无数据",
+        "empty": "暂无插件数据",
         "noMatch": "没有匹配的插件",
         "self": "本插件",
-        "inactive": "已禁用",
         "reserved": "内置",
-        "total": "共 {n} 个插件",
-        "deepHint": "独占/共享来自引用图深度扫描，需要手动点击「深度扫描」。",
-        "deepStale": "深度扫描数据来自",
-        "deepNever": "尚未执行深度扫描",
-        "deepTruncated": "深度扫描已达上限被截断，独占/共享偏小。"
+        "inactive": "未启用",
+        "censusReady": "对象普查：已测量",
+        "censusMissing": "对象普查：未运行",
+        "deep": "引用图",
+        "deepMissing": "引用图：未运行",
+        "censusHint": "对象普查是按类型模块归属的浅层估算；点击一行查看导入、对象类型和引用图结果。",
+        "importHint": "导入成本只回答“启动时加载它大约增加了多少 RSS”，不能当作当前插件独占内存；需要运行时归属时手动执行对象普查。"
       },
-      "chart": {
-        "top": "占用最高的插件",
-        "empty": "还没有可归因的数据",
-        "series": "采样趋势"
+      "imports": {
+        "title": "加载期导入成本",
+        "desc": "只在启动阶段短暂记录 RSS 差分，页面刷新不会继续包裹导入函数。",
+        "packages": "首次加载的第三方包",
+        "plugins": "插件加载汇总",
+        "accounting": "插件代码与首次加载的第三方包之和",
+        "coverageSub": "只有钩子安装后首次加载的插件可测量",
+        "packageHint": "同一个包只记在第一个导入者名下，共用它的插件不会重复计费。",
+        "empty": "没有可显示的导入记录；重启后可覆盖更多插件。",
+        "emptyPlugins": "没有已测量的插件"
       },
-      "others": {
-        "title": "非插件部分",
-        "desc": "无法归因到插件的分配，按来源归类。",
-        "bucket_astrbot_core": "AstrBot 核心",
-        "bucket_python_stdlib": "Python 标准库",
-        "bucket_other": "其他代码",
-        "bucket_unknown": "无调用栈（帧深度不足）",
-        "bucket_rest": "其余来源"
+      "audit": {
+        "title": "顶层依赖审计",
+        "desc": "扫描源代码中模块顶层的重依赖；把不必开机加载的包移到函数内，才可能减少启动期内存。",
+        "scanned": "扫描",
+        "findings": "发现",
+        "items": "处",
+        "guarded": "处为可选导入",
+        "guardedShort": "可选",
+        "eager": "顶层加载",
+        "notRun": "尚未运行；首次加载通常会自动建立缓存。",
+        "empty": "没有找到带已知成本的重依赖",
+        "emptyNotRun": "尚未运行依赖审计",
+        "unknown": "源码中还发现未建立成本表的第三方模块："
       },
-      "detail": {
-        "title": "插件详情",
-        "meta": "基本信息",
-        "numbers": "内存指标",
-        "hotspots": "分配热点",
-        "hotspotsEmpty": "没有采集到分配位置，可能是追踪未开启或栈深度不足。",
-        "submodules": "已加载子模块",
-        "submodulesEmpty": "没有额外子模块",
-        "series": "归因内存趋势",
-        "seriesEmpty": "采样点不足，稍后再看。",
-        "notFound": "未找到该插件，可能已被卸载。",
-        "version": "版本",
-        "author": "作者",
-        "module": "模块路径",
-        "root": "插件目录"
+      "census": {
+        "title": "运行时对象普查",
+        "buckets": "其他对象来源",
+        "scanned": "扫描",
+        "notRun": "尚未运行；这是唯一一次会遍历 GC 对象列表的操作。默认关闭。",
+        "sampled": "当前为抽样估算，数值已按抽样率放大。",
+        "limit": "只统计 GC 跟踪对象的浅层大小，不能与进程 RSS 相加。",
+        "warning": "运行前请确认可以接受短暂停顿；在有 swap 的小 VPS 上，扫描可能把页面读回内存。",
+        "emptyPlugins": "没有识别到插件对象",
+        "emptyBuckets": "没有其他对象来源"
+      },
+      "bucket": {
+        "astrbot_core": "AstrBot 核心",
+        "python_stdlib": "Python 标准库",
+        "builtins": "内置对象",
+        "other": "其他",
+        "unknown": "未知"
       },
       "alerts": {
+        "title": "告警记录",
+        "enabled": "告警已启用",
+        "records": "条记录",
+        "disabled": "当前没有设置告警阈值；可在插件配置中启用进程 RSS 或对象普查规则。",
         "empty": "暂无告警",
-        "disabled": "未设置告警阈值，可在插件配置中设置 alert_plugin_mb 与 alert_growth_mb_per_hour。",
-        "kind_size": "占用超限",
-        "kind_growth": "持续增长"
+        "process": "进程",
+        "unknown": "告警",
+        "kind": { "rss": "RSS 阈值", "rssGrowth": "RSS 增长", "size": "对象体量", "growth": "对象增长" }
       },
+      "banner": { "attention": "需要注意", "note": "测量说明" },
       "note": {
-        "title": "需要注意",
-        "tracemalloc_off": "tracemalloc 未开启，只记录进程 RSS 趋势；需要按插件归因请点上方「开启追踪」。",
-        "tracing_started_late": "追踪在插件加载后启动，插件导入期内存未计入，数值偏小。",
-        "no_snapshot": "本次未取得内存快照。",
-        "psutil_missing": "未安装 psutil，进程级指标不可用。",
-        "deep_scan_truncated": "深度扫描被截断，独占/共享保留量偏小。"
+        "import_hook_not_installed": "导入成本钩子没有留下有效记录；重启后会在更早阶段安装。",
+        "import_hook_degraded": "导入成本钩子已自动降级，导入账本可能不完整。",
+        "partial_import_coverage": "部分插件在本插件安装钩子之前已加载，导入成本显示为未知。",
+        "census_never_run": "对象普查尚未运行；需要时在“对象普查”页手动执行。",
+        "census_sampled": "对象普查使用抽样，结果是估算值，适合比较比例。",
+        "census_truncated": "对象普查达到时间上限，结果偏小。",
+        "dep_audit_never_run": "依赖审计尚未运行。",
+        "dep_audit_truncated": "依赖审计达到时间上限，部分源码未扫描。",
+        "psutil_missing": "没有 psutil，部分进程级指标不可用。",
+        "rss_reader_unavailable": "无法读取进程 RSS。",
+        "deep_scan_truncated": "引用图扫描达到上限，保留量是下界。"
       },
       "help": {
-        "title": "各列含义与局限",
-        "attributed": "归因分配：tracemalloc 记录的、调用栈中最内层属于该插件的分配总量。它反映“这些内存是谁申请的”，包含插件调用标准库或第三方库时申请的内存。",
-        "direct": "直接分配：归因分配中，最内层调用帧就在插件代码里的部分。二者差值大，说明内存主要由插件调用的库申请。",
-        "exclusive": "独占保留：从插件实例与模块出发遍历引用图，仅该插件可达的对象大小之和。它反映“插件不卸载就无法释放的内存”。",
-        "shared": "共享保留：被多个插件同时可达的对象大小，为避免重复计算不计入独占。",
-        "trend": "增长趋势：最近采样点的最小二乘斜率，折算为每小时。持续为正通常意味着泄漏或缓存增长。",
-        "limits": "局限：tracemalloc 只统计 Python 层分配，C 扩展（如 numpy、PIL 的缓冲区）与解释器自身开销不在其内，因此各插件之和会明显小于进程 RSS。追踪本身也会带来 10%~30% 的额外内存与 CPU 开销。",
-        "env": "获得完整数据：以环境变量 PYTHONTRACEMALLOC=12 启动 AstrBot，追踪会在导入任何插件之前生效。",
-        "cost": "开销：常规刷新只读取快照，开销很小；深度扫描会遍历引用图，会带来数百毫秒到数秒的停顿，请按需使用。"
+        "title": "怎么看这些数字",
+        "safetyTitle": "小内存机器建议",
+        "label": { "rss": "进程 RSS", "import": "导入成本", "census": "对象普查", "retained": "引用图保留", "trend": "增长趋势", "cgroup": "容器额度" },
+        "rss": "RSS 是操作系统当前驻留在物理内存中的进程页，最适合判断小 VPS 是否逼近内存压力；它不能告诉你这些页属于哪个插件。",
+        "import": "导入成本是插件首次加载前后的 RSS 差分，适合找启动期的大包。共享依赖只记给第一个导入者，不能当作插件当前独占占用。",
+        "census": "对象普查按对象类型所属模块归类存活对象，并只计浅层大小。未被 GC 跟踪的 bytes、字符串以及 C 扩展缓冲区可能完全不在里面。",
+        "retained": "引用图扫描从插件实例和模块向外走，估计卸载插件前仍可达的独占/共享对象；它是有预算的下界，不是精确账单。",
+        "trend": "趋势是最近样本的斜率，按小时显示。只有对象普查样本才形成插件曲线；进程 RSS 曲线始终可用。",
+        "cgroup": "容器额度来自 Linux cgroup；如果存在，它比整台宿主机的系统百分比更贴近 AstrBot 实际可用上限。",
+        "safety": {
+          "keepCensusOff": "默认保持对象普查关闭；需要定位时再手动运行，避免后台周期性扫描大堆。",
+          "watchSwap": "重点看“已换出”和 RSS。swap 持续上升通常比单个插件数字更值得先处理。",
+          "useRssAlert": "小 VPS 优先配置进程 RSS 阈值和 RSS 增长阈值；这是不依赖对象归属的可靠告警。",
+          "runDeepManually": "引用图扫描只在排查时运行，并接受它可能造成短暂停顿。"
+        }
       },
-      "unit": {
-        "perHour": "/小时",
-        "ms": "毫秒",
-        "seconds": "秒"
+      "detail": {
+        "notFound": "找不到这个插件",
+        "total": "总成本",
+        "self": "自身模块",
+        "wall": "耗时",
+        "modules": "模块",
+        "bytes": "浅层大小",
+        "objects": "对象数",
+        "types": "类型数",
+        "retainedTotal": "合计",
+        "exclusive": "仅此插件可达",
+        "shared": "多插件共享",
+        "retainedObjects": "对象数",
+        "truncated": "扫描被截断，数值是下界。",
+        "importMissing": "该插件在记录窗口前已加载，导入成本未知。",
+        "censusMissing": "尚未对这个进程运行对象普查。",
+        "retainedMissing": "尚未运行引用图扫描。",
+        "packagesEmpty": "没有记录到由它首次加载的第三方包。",
+        "auditEmpty": "没有识别到重依赖。",
+        "auditMissing": "尚未建立依赖审计结果。",
+        "importTitle": "加载期导入成本",
+        "censusTitle": "对象普查",
+        "retainedTitle": "引用图保留量",
+        "packageTitle": "首次加载的第三方包",
+        "auditTitle": "顶层依赖审计",
+        "historyTitle": "插件对象趋势",
+        "historyEmpty": "还没有对象普查历史",
+        "submodules": "已加载子模块"
       },
-      "status": {
-        "yes": "是",
-        "no": "否",
-        "never": "从未",
-        "fresh": "本次刷新"
-      },
+      "unit": { "perHour": "/小时" },
       "toast": {
         "refreshed": "已刷新",
-        "deepDone": "深度扫描完成",
+        "deepDone": "引用图扫描完成",
+        "censusDone": "对象普查完成",
+        "auditDone": "依赖审计完成",
         "baselineSet": "已设为基线",
         "baselineCleared": "已清除基线",
         "gcDone": "GC 完成",
-        "traceStarted": "已开启 tracemalloc",
-        "traceStopped": "已关闭 tracemalloc",
-        "peakReset": "已重置峰值",
         "copied": "已复制",
-        "copyFailed": "复制失败",
-        "loading": "加载中…",
-        "deepRunning": "正在扫描引用图…"
+        "copyFailed": "复制失败"
       },
-      "error": {
-        "request": "请求失败"
+      "confirm": {
+        "census": "对象普查会遍历 GC 对象列表，可能造成短暂停顿并读回 swap 页面。继续吗？",
+        "deep": "引用图扫描会遍历插件可达对象，可能需要几秒。继续吗？"
       },
-      "skin": {
-        "label": "主题",
-        "auto": "跟随 Dashboard",
-        "dark": "深色",
-        "light": "浅色"
-      }
+      "error": { "request": "请求失败", "bridge": "页面桥接不可用" }
     }
   }
 }

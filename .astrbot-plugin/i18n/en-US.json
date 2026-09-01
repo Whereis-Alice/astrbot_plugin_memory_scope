@@ -1,182 +1,272 @@
 {
   "metadata": {
     "display_name": "MemoryScope",
-    "description": "Per-plugin memory accounting for AstrBot: tracemalloc attribution, retained-size scan, trends and leak alerts."
+    "description": "Lightweight observation of AstrBot RSS, plugin import cost, live objects and memory growth."
   },
   "pages": {
     "memory": {
       "title": "MemoryScope",
-      "desc": "Per-plugin memory attribution, retained size, growth trends and alerts",
+      "desc": "Lightweight observation of process memory, plugin imports and live objects",
       "tab": {
         "overview": "Overview",
         "plugins": "Plugins",
+        "imports": "Import cost",
+        "audit": "Dependency audit",
+        "census": "Object census",
         "alerts": "Alerts",
-        "help": "Metrics"
+        "help": "Metric guide"
       },
       "action": {
         "refresh": "Refresh",
-        "deep": "Deep scan",
+        "deep": "Reference scan",
         "baselineSet": "Set baseline",
         "baselineClear": "Clear baseline",
-        "gc": "Force GC",
-        "close": "Close",
-        "traceOn": "Start tracing",
-        "traceOff": "Stop tracing",
-        "resetPeak": "Reset peak",
-        "copy": "Copy"
+        "gc": "Run GC",
+        "audit": "Run audit",
+        "census": "Run once",
+        "close": "Close"
       },
-      "auto": {
-        "label": "Auto refresh",
-        "off": "Off"
-      },
+      "auto": { "label": "Auto refresh", "off": "Off" },
+      "skin": { "label": "Theme", "auto": "Follow Dashboard", "dark": "Dark", "light": "Light" },
       "card": {
-        "process": "Process memory",
-        "tracemalloc": "Traced memory",
-        "plugins": "Plugin total",
-        "gc": "Garbage collector"
+        "rss": "Process RSS",
+        "composition": "Memory composition",
+        "compositionSub": "Anonymous pages usually dominate RSS; swap is separate",
+        "import": "Load-time imports",
+        "hookRunning": "Import ledger is still running",
+        "hookDone": "Startup recording is complete",
+        "census": "Object census",
+        "censusMeasured": "Estimated by defining type module",
+        "censusOff": "Off by default to avoid a heap walk",
+        "plugins": "Plugin catalog",
+        "runtime": "Runtime"
       },
       "metric": {
-        "vms": "VMS",
-        "threads": "Threads",
-        "uptime": "Uptime",
-        "peak": "Peak",
-        "frames": "Stack depth",
-        "pluginShare": "Share of traced",
-        "measured": "With data",
-        "gcCounts": "Pending per generation",
-        "gcCollections": "Collections per generation",
+        "vms": "Virtual memory",
+        "swap": "Swapped",
+        "baselineDelta": "Baseline delta",
+        "anon": "Anonymous",
+        "file": "File-backed",
+        "shmem": "Shared memory",
+        "cgroup": "Container limit",
+        "systemShare": "of system",
+        "pluginCode": "Plugin modules",
+        "packages": "Third-party packages",
+        "hookCost": "Probe overhead",
+        "censusObjects": "Objects",
+        "censusTime": "Scan time",
+        "censusRate": "Sample rate",
+        "measured": "with import data",
+        "plugins": "plugins",
+        "modules": "modules",
+        "importCoverage": "Import coverage",
+        "history": "History samples",
+        "gcCounts": "GC generation counts",
         "uncollectable": "Uncollectable",
-        "trackedObjects": "GC tracked objects",
-        "samples": "Samples",
-        "tracedSamples": "traced",
-        "interval": "Sample interval",
-        "baselineAt": "Baseline at",
-        "pid": "PID",
-        "python": "Python"
+        "totalImport": "Import ledger",
+        "hookWindow": "Recording window",
+        "calls": "Import calls",
+        "coverage": "Plugin coverage",
+        "packagesCount": "Package count",
+        "status": "Status"
       },
-      "trace": {
-        "on": "tracemalloc is on",
-        "off": "tracemalloc is off",
-        "offHint": "Per-plugin attribution needs tracemalloc. Turn it on with the button on the right.",
-        "late": "Tracing started after plugins were loaded",
-        "lateHint": "Memory allocated while importing plugins is not counted, so every plugin reads lower than reality. Start AstrBot with PYTHONTRACEMALLOC=12 for complete data.",
-        "full": "Tracing covers plugin import, data is complete."
+      "status": {
+        "unavailable": "Unavailable",
+        "notRun": "Not run",
+        "degraded": "Degraded",
+        "running": "Running",
+        "done": "Complete",
+        "off": "No data",
+        "truncated": "Truncated",
+        "complete": "Complete",
+        "unknown": "Unknown",
+        "loading": "Loading…"
+      },
+      "chart": {
+        "rssTitle": "Process RSS trend",
+        "topTitle": "Plugins to inspect",
+        "empty": "No history yet; the chart appears after sampling.",
+        "points": "points",
+        "noCensusRows": "The census found no plugin-owned objects",
+        "noImportRows": "No import records are available",
+        "topCensusCaption": "By shallow size of live objects",
+        "topImportCaption": "By startup RSS delta; not current exclusive usage"
+      },
+      "breakdown": {
+        "title": "Census source buckets",
+        "notRun": "The object census is off by default; run it once to see buckets.",
+        "desc": "Only GC-tracked objects with a known type-module bucket appear here; this is not RSS.",
+        "empty": "No other objects"
+      },
+      "probe": {
+        "title": "Probe status",
+        "import": "Import cost",
+        "census": "Object census",
+        "audit": "Dependency audit",
+        "deep": "Reference scan",
+        "manual": "Manual only",
+        "scanned": "plugins"
       },
       "col": {
         "plugin": "Plugin",
-        "attributed": "Attributed",
-        "direct": "Direct",
-        "exclusive": "Exclusive",
-        "shared": "Shared",
+        "import": "Import cost",
+        "census": "Object census",
         "objects": "Objects",
-        "delta": "Δ baseline",
-        "trend": "Trend",
-        "share": "Share",
-        "blocks": "Blocks",
-        "chart": "Recent"
+        "retained": "Retained graph",
+        "trend": "Growth trend",
+        "chart": "Recent curve",
+        "package": "Package",
+        "bytes": "RSS delta",
+        "modules": "Modules",
+        "importer": "First importer",
+        "gross": "Total cost",
+        "self": "Plugin modules",
+        "packages": "Packages"
       },
       "table": {
         "search": "Search plugins…",
-        "empty": "No data yet",
-        "noMatch": "No matching plugin",
-        "self": "this plugin",
-        "inactive": "disabled",
-        "reserved": "built-in",
-        "total": "{n} plugins",
-        "deepHint": "Exclusive/shared come from the reference-graph deep scan; run it with the Deep scan button.",
-        "deepStale": "Deep scan from",
-        "deepNever": "deep scan not run yet",
-        "deepTruncated": "Deep scan hit its limits, exclusive/shared read lower than reality."
+        "empty": "No plugin data",
+        "noMatch": "No matching plugins",
+        "self": "This plugin",
+        "reserved": "Built-in",
+        "inactive": "Inactive",
+        "censusReady": "Census: measured",
+        "censusMissing": "Census: not run",
+        "deep": "Graph",
+        "deepMissing": "Graph: not run",
+        "censusHint": "The census is a shallow estimate grouped by defining type module. Select a row for import, object-type and graph details.",
+        "importHint": "Import cost answers how much startup RSS rose while loading a plugin; it is not the plugin's current exclusive memory. Run the census for a runtime view."
       },
-      "chart": {
-        "top": "Largest plugins",
-        "empty": "Nothing attributed yet",
-        "series": "Sampled trend"
+      "imports": {
+        "title": "Load-time import cost",
+        "desc": "RSS deltas are recorded only during startup; page refreshes do not keep wrapping the import function.",
+        "packages": "First-loaded third-party packages",
+        "plugins": "Plugin load summary",
+        "accounting": "Plugin modules plus packages first loaded during startup",
+        "coverageSub": "Only plugins first loaded after the hook was installed are measurable",
+        "packageHint": "A shared package is listed under its first importer and is not charged again to later plugins.",
+        "empty": "No import records to show; restart to cover more plugins.",
+        "emptyPlugins": "No measured plugins"
       },
-      "others": {
-        "title": "Non-plugin memory",
-        "desc": "Allocations that cannot be attributed to a plugin, grouped by origin.",
-        "bucket_astrbot_core": "AstrBot core",
-        "bucket_python_stdlib": "Python stdlib",
-        "bucket_other": "Other code",
-        "bucket_unknown": "No traceback (stack too shallow)",
-        "bucket_rest": "Remaining"
+      "audit": {
+        "title": "Top-level dependency audit",
+        "desc": "Find heavy packages imported at module scope. Moving optional work into a function can reduce startup memory.",
+        "scanned": "Scanned",
+        "findings": "Found",
+        "items": "items",
+        "guarded": "optional imports",
+        "guardedShort": "optional",
+        "eager": "loaded at module scope",
+        "notRun": "Not run yet; the first report normally creates a cache.",
+        "empty": "No heavy dependency with a known cost was found",
+        "emptyNotRun": "Dependency audit has not run",
+        "unknown": "Third-party modules without a measured cost were also found:"
       },
-      "detail": {
-        "title": "Plugin details",
-        "meta": "Metadata",
-        "numbers": "Memory metrics",
-        "hotspots": "Allocation hotspots",
-        "hotspotsEmpty": "No allocation sites captured — tracing may be off or the stack too shallow.",
-        "submodules": "Loaded submodules",
-        "submodulesEmpty": "No extra submodules",
-        "series": "Attributed memory over time",
-        "seriesEmpty": "Not enough samples yet.",
-        "notFound": "Plugin not found, it may have been unloaded.",
-        "version": "Version",
-        "author": "Author",
-        "module": "Module path",
-        "root": "Directory"
+      "census": {
+        "title": "Live object census",
+        "buckets": "Other object sources",
+        "scanned": "Scanned",
+        "notRun": "Not run; this is the only operation that walks the GC object list. It is off by default.",
+        "sampled": "This is a sampled estimate scaled by the sample rate.",
+        "limit": "Only shallow sizes of GC-tracked objects are counted; do not add this to RSS.",
+        "warning": "Make sure a short pause is acceptable. On a small VPS with swap, the walk may fault pages back in.",
+        "emptyPlugins": "No plugin-owned objects identified",
+        "emptyBuckets": "No other object sources"
+      },
+      "bucket": {
+        "astrbot_core": "AstrBot core",
+        "python_stdlib": "Python standard library",
+        "builtins": "Built-in objects",
+        "other": "Other",
+        "unknown": "Unknown"
       },
       "alerts": {
+        "title": "Alert history",
+        "enabled": "Alerts enabled",
+        "records": "records",
+        "disabled": "No thresholds are configured. Enable process RSS or object-census rules in the plugin settings.",
         "empty": "No alerts",
-        "disabled": "No alert thresholds configured. Set alert_plugin_mb and alert_growth_mb_per_hour in the plugin config.",
-        "kind_size": "Over size limit",
-        "kind_growth": "Growing"
+        "process": "Process",
+        "unknown": "Alert",
+        "kind": { "rss": "RSS threshold", "rssGrowth": "RSS growth", "size": "Object size", "growth": "Object growth" }
       },
+      "banner": { "attention": "Attention", "note": "Measurement note" },
       "note": {
-        "title": "Heads up",
-        "tracemalloc_off": "tracemalloc is off; only process RSS is being recorded. Use “Start tracing” above for per-plugin attribution.",
-        "tracing_started_late": "Tracing started after plugin load, import-time memory is not counted.",
-        "no_snapshot": "No memory snapshot was taken this round.",
-        "psutil_missing": "psutil is missing, process metrics are unavailable.",
-        "deep_scan_truncated": "Deep scan was truncated, exclusive/shared read lower than reality."
+        "import_hook_not_installed": "The import hook left no usable records; restart to install it earlier.",
+        "import_hook_degraded": "The import hook self-disabled; the import ledger may be incomplete.",
+        "partial_import_coverage": "Some plugins loaded before this plugin installed its hook, so their import cost is unknown.",
+        "census_never_run": "The object census has not run; use the Object census page when needed.",
+        "census_sampled": "The object census is sampled and should be read as an estimate.",
+        "census_truncated": "The object census hit its time budget and is smaller than reality.",
+        "dep_audit_never_run": "The dependency audit has not run.",
+        "dep_audit_truncated": "The dependency audit hit its time budget; some source files were skipped.",
+        "psutil_missing": "psutil is unavailable, so some process metrics are missing.",
+        "rss_reader_unavailable": "Process RSS could not be read.",
+        "deep_scan_truncated": "The reference scan hit a limit; retained values are lower bounds."
       },
       "help": {
-        "title": "What the columns mean, and what they miss",
-        "attributed": "Attributed: total allocations whose innermost frame inside the traceback belongs to this plugin. It answers \"who asked for this memory\", including memory the plugin requested through the stdlib or third-party libraries.",
-        "direct": "Direct: the part of Attributed whose innermost frame is the plugin's own code. A large gap means most memory is allocated by libraries the plugin calls.",
-        "exclusive": "Exclusive: walking the reference graph from the plugin instance and its modules, the total size of objects reachable only from this plugin. It answers \"what cannot be freed while the plugin stays loaded\".",
-        "shared": "Shared: size of objects reachable from more than one plugin. Kept out of Exclusive to avoid double counting.",
-        "trend": "Trend: least-squares slope over recent samples, scaled to one hour. A steadily positive value usually means a leak or a growing cache.",
-        "limits": "Limits: tracemalloc only sees Python-level allocations. C extension buffers (numpy, PIL) and interpreter overhead are invisible, so the plugin totals are much smaller than process RSS. Tracing itself costs roughly 10-30% extra memory and CPU.",
-        "env": "For complete data start AstrBot with PYTHONTRACEMALLOC=12 so tracing is active before any plugin is imported.",
-        "cost": "Cost: a normal refresh only reads a snapshot and is cheap. A deep scan walks the reference graph and can stall for hundreds of milliseconds to a few seconds."
+        "title": "How to read the numbers",
+        "safetyTitle": "Advice for small-memory hosts",
+        "label": { "rss": "Process RSS", "import": "Import cost", "census": "Object census", "retained": "Retained graph", "trend": "Growth trend", "cgroup": "Container limit" },
+        "rss": "RSS is the process memory currently resident in physical RAM. It is the best first signal for a small VPS nearing pressure, but it cannot identify which plugin owns those pages.",
+        "import": "Import cost is the RSS delta around a plugin's first load and is useful for finding large startup dependencies. Shared packages are listed under the first importer, so this is not current exclusive usage.",
+        "census": "The census groups live objects by the module that defines their type and counts shallow sizes. Bytes, strings, and many C-extension buffers may not appear at all.",
+        "retained": "The reference scan walks outward from plugin instances and modules to estimate objects still reachable while the plugin remains loaded. It is budgeted and is a lower bound, not an exact bill.",
+        "trend": "Trend is a recent sample slope shown per hour. Plugin curves use only census samples; the process RSS curve works even when every plugin probe is off.",
+        "cgroup": "The cgroup values come from Linux. When present, the cgroup limit is more relevant than whole-host system percentage for a containerized AstrBot.",
+        "safety": {
+          "keepCensusOff": "Keep the object census off by default; run it only while investigating so a large heap is not scanned periodically.",
+          "watchSwap": "Watch swapped memory and RSS together. Rising swap is often more urgent than any per-plugin estimate.",
+          "useRssAlert": "On a small VPS, start with process RSS and RSS-growth thresholds; they do not depend on plugin attribution.",
+          "runDeepManually": "Run the reference scan only during an investigation and expect a short pause."
+        }
       },
-      "unit": {
-        "perHour": "/h",
-        "ms": "ms",
-        "seconds": "s"
+      "detail": {
+        "notFound": "Plugin not found",
+        "total": "Total cost",
+        "self": "Plugin modules",
+        "wall": "Elapsed",
+        "modules": "Modules",
+        "bytes": "Shallow size",
+        "objects": "Objects",
+        "types": "Types",
+        "retainedTotal": "Total",
+        "exclusive": "Reachable only here",
+        "shared": "Shared by plugins",
+        "retainedObjects": "Objects",
+        "truncated": "The scan was truncated; values are lower bounds.",
+        "importMissing": "This plugin loaded before the recording window; import cost is unknown.",
+        "censusMissing": "The object census has not run for this process.",
+        "retainedMissing": "The reference scan has not run.",
+        "packagesEmpty": "No package was recorded as first loaded by this plugin.",
+        "auditEmpty": "No heavy dependency was identified.",
+        "auditMissing": "No dependency audit result is available.",
+        "importTitle": "Load-time import cost",
+        "censusTitle": "Object census",
+        "retainedTitle": "Retained graph",
+        "packageTitle": "First-loaded third-party packages",
+        "auditTitle": "Top-level dependency audit",
+        "historyTitle": "Plugin object trend",
+        "historyEmpty": "No object-census history yet",
+        "submodules": "Loaded submodules"
       },
-      "status": {
-        "yes": "yes",
-        "no": "no",
-        "never": "never",
-        "fresh": "this refresh"
-      },
+      "unit": { "perHour": "/h" },
       "toast": {
         "refreshed": "Refreshed",
-        "deepDone": "Deep scan finished",
+        "deepDone": "Reference scan complete",
+        "censusDone": "Object census complete",
+        "auditDone": "Dependency audit complete",
         "baselineSet": "Baseline saved",
         "baselineCleared": "Baseline cleared",
-        "gcDone": "GC finished",
-        "traceStarted": "tracemalloc started",
-        "traceStopped": "tracemalloc stopped",
-        "peakReset": "Peak reset",
+        "gcDone": "GC complete",
         "copied": "Copied",
-        "copyFailed": "Copy failed",
-        "loading": "Loading…",
-        "deepRunning": "Walking the reference graph…"
+        "copyFailed": "Copy failed"
       },
-      "error": {
-        "request": "Request failed"
+      "confirm": {
+        "census": "The object census walks the GC object list and may pause the process or fault swap pages back in. Continue?",
+        "deep": "The reference scan walks objects reachable from plugins and may take several seconds. Continue?"
       },
-      "skin": {
-        "label": "Theme",
-        "auto": "Follow Dashboard",
-        "dark": "Dark",
-        "light": "Light"
-      }
+      "error": { "request": "Request failed", "bridge": "Page bridge unavailable" }
     }
   }
 }

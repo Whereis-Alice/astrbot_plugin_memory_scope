@@ -1,10 +1,15 @@
 """Resolve AstrBot plugin identities and map source paths back to plugins.
 
-Allocation samples only carry file names, therefore attribution needs a fast
-path -> plugin lookup.  Every AstrBot plugin lives in its own directory
-(``data/plugins/<dir>`` for user plugins, ``packages/<dir>`` for the reserved
-ones) and the module file is always ``main.py`` or ``<dir>.py`` directly inside
-it, so the parent directory of the module file is a safe plugin root.
+Probe results only carry module names or source paths, therefore attribution
+needs a fast lookup in both directions.  Every AstrBot plugin lives in its own
+directory and is imported under a stable module prefix:
+
+* user plugins: ``data/plugins/<dir>``   -> ``data.plugins.<dir>.<module>``
+* reserved ones: ``packages/<dir>``      -> ``astrbot.builtin_stars.<dir>.<module>``
+
+The module file is always ``main.py`` or ``<dir>.py`` directly inside the
+directory, so the parent directory of the module file is a safe plugin root,
+and the segment after the prefix is the plugin directory name.
 """
 
 from __future__ import annotations
@@ -37,6 +42,23 @@ def _as_dir_key(path: str) -> str:
     return key if key.endswith(os.sep) else key + os.sep
 
 
+def _dir_name_from_module(module_path: Any) -> str:
+    """``data.plugins.foo.main`` -> ``foo``; empty string when unknown."""
+
+    if not module_path:
+        return ""
+    parts = str(module_path).split(".")
+    for prefix_len, head in (
+        (2, ("data", "plugins")),
+        (2, ("astrbot", "builtin_stars")),
+    ):
+        if tuple(parts[:prefix_len]) == head and len(parts) > prefix_len:
+            return parts[prefix_len]
+    if parts[0] == "packages" and len(parts) > 1:
+        return parts[1]
+    return ""
+
+
 @dataclass(slots=True)
 class PluginEntry:
     """A single installed plugin plus everything needed to measure it."""
@@ -49,6 +71,7 @@ class PluginEntry:
     reserved: bool
     module_path: str | None
     root_dir: str | None
+    root_dir_name: str = ""
     star_cls: Any | None = None
     module: Any | None = None
     submodules: list[Any] = field(default_factory=list)
@@ -56,6 +79,24 @@ class PluginEntry:
     @property
     def has_instance(self) -> bool:
         return self.star_cls is not None
+
+    @property
+    def import_key(self) -> str:
+        """Plugin directory name: how import costs and modules are keyed.
+
+        ``PluginEntry.name`` comes from ``@register(...)`` and often differs
+        from the directory (``MemoryScope`` vs ``astrbot_plugin_memory_scope``),
+        while module paths only ever carry the directory name.
+        """
+
+        if self.root_dir_name:
+            return self.root_dir_name
+        if self.root_dir:
+            trimmed = self.root_dir.rstrip("\\/")
+            base = os.path.basename(trimmed)
+            if base:
+                return base
+        return self.name
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -66,6 +107,8 @@ class PluginEntry:
             "activated": self.activated,
             "reserved": self.reserved,
             "root_dir": self.root_dir,
+            "root_dir_name": self.root_dir_name,
+            "import_key": self.import_key,
             "module_path": self.module_path,
             "has_instance": self.has_instance,
         }
@@ -181,6 +224,7 @@ class PluginRegistry:
             reserved=bool(getattr(meta, "reserved", False)),
             module_path=str(module_path) if module_path else None,
             root_dir=self._resolve_root_dir(meta, module, star_cls),
+            root_dir_name=root_dir_name or _dir_name_from_module(module_path),
             star_cls=star_cls,
             module=module,
         )

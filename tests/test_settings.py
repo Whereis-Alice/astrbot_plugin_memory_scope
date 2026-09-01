@@ -3,16 +3,24 @@
 from __future__ import annotations
 
 from core.collector import Settings
-from core.tracemalloc_probe import DEFAULT_FRAMES
+from core.dep_audit import DEFAULT_MAX_FILES, DEFAULT_TIME_BUDGET_MS
+from core.import_cost import DEFAULT_MAX_OVERHEAD_MS
 
 
 def test_defaults_from_empty_config():
     settings = Settings.from_config({})
 
-    # Off by default: tracing costs memory on the very host being diagnosed.
-    assert settings.auto_start_tracemalloc is False
-    assert settings.auto_start_min_available_mb == 512.0
-    assert settings.tracemalloc_frames == DEFAULT_FRAMES
+    # The import hook is on by default: it is the only probe cheap enough to
+    # run unconditionally (~2 us per first-time import, no allocation tracing).
+    assert settings.measure_import_cost is True
+    assert settings.import_hook_max_overhead_ms == DEFAULT_MAX_OVERHEAD_MS
+    # The census walks the whole GC heap, so it must be opt-in.
+    assert settings.census_enabled is False
+    assert settings.census_sample_rate == 10
+    assert settings.census_time_budget_ms == 4000
+    assert settings.dep_audit_enabled is True
+    assert settings.dep_audit_max_files == DEFAULT_MAX_FILES
+    assert settings.dep_audit_time_budget_ms == DEFAULT_TIME_BUDGET_MS
     assert settings.sample_interval_seconds == 60
     assert settings.history_size == 720
     assert settings.deep_scan_enabled is True
@@ -22,14 +30,15 @@ def test_defaults_from_empty_config():
     assert settings.include_object_count is False
     assert settings.alert_plugin_mb == 0.0
     assert settings.alert_growth_mb_per_hour == 0.0
+    assert settings.alert_rss_mb == 0.0
+    assert settings.alert_rss_growth_mb_per_hour == 0.0
     assert settings.persist_history is True
     assert settings.command_top_n == 8
-    # Not user configurable, so it must keep its default no matter the config.
     assert settings.registry_ttl_seconds == 30.0
 
 
 def test_config_without_get_falls_back_to_defaults():
-    assert Settings.from_config(None).tracemalloc_frames == DEFAULT_FRAMES
+    assert Settings.from_config(None).measure_import_cost is True
     assert Settings.from_config(object()).sample_interval_seconds == 60
     assert Settings.from_config([]).history_size == 720
 
@@ -37,9 +46,14 @@ def test_config_without_get_falls_back_to_defaults():
 def test_values_are_read_from_the_config():
     settings = Settings.from_config(
         {
-            "auto_start_tracemalloc": True,
-            "auto_start_min_available_mb": 128,
-            "tracemalloc_frames": 20,
+            "measure_import_cost": False,
+            "import_hook_max_overhead_ms": 250,
+            "census_enabled": True,
+            "census_sample_rate": 1,
+            "census_time_budget_ms": 9000,
+            "dep_audit_enabled": False,
+            "dep_audit_max_files": 1200,
+            "dep_audit_time_budget_ms": 5000,
             "sample_interval_seconds": 120,
             "history_size": 1000,
             "deep_scan_enabled": False,
@@ -49,15 +63,22 @@ def test_values_are_read_from_the_config():
             "include_object_count": True,
             "alert_plugin_mb": 256.5,
             "alert_growth_mb_per_hour": 12.5,
+            "alert_rss_mb": 900,
+            "alert_rss_growth_mb_per_hour": 40,
             "persist_history": False,
             "command_top_n": 15,
             "registry_ttl_seconds": 999,
         },
     )
 
-    assert settings.auto_start_tracemalloc is True
-    assert settings.auto_start_min_available_mb == 128.0
-    assert settings.tracemalloc_frames == 20
+    assert settings.measure_import_cost is False
+    assert settings.import_hook_max_overhead_ms == 250.0
+    assert settings.census_enabled is True
+    assert settings.census_sample_rate == 1
+    assert settings.census_time_budget_ms == 9000
+    assert settings.dep_audit_enabled is False
+    assert settings.dep_audit_max_files == 1200
+    assert settings.dep_audit_time_budget_ms == 5000
     assert settings.sample_interval_seconds == 120
     assert settings.history_size == 1000
     assert settings.deep_scan_enabled is False
@@ -67,15 +88,21 @@ def test_values_are_read_from_the_config():
     assert settings.include_object_count is True
     assert settings.alert_plugin_mb == 256.5
     assert settings.alert_growth_mb_per_hour == 12.5
+    assert settings.alert_rss_mb == 900.0
+    assert settings.alert_rss_growth_mb_per_hour == 40.0
     assert settings.persist_history is False
     assert settings.command_top_n == 15
-    assert settings.registry_ttl_seconds == 30.0
+    # registry_ttl_seconds is read too, it just has no schema entry.
+    assert settings.registry_ttl_seconds == 999.0
 
 
 def test_integers_are_clamped_at_both_ends():
     low = Settings.from_config(
         {
-            "tracemalloc_frames": 0,
+            "census_sample_rate": 0,
+            "census_time_budget_ms": 1,
+            "dep_audit_max_files": 0,
+            "dep_audit_time_budget_ms": 1,
             "sample_interval_seconds": 1,
             "history_size": 1,
             "deep_scan_max_objects": 1,
@@ -84,7 +111,10 @@ def test_integers_are_clamped_at_both_ends():
             "command_top_n": 0,
         },
     )
-    assert low.tracemalloc_frames == 1
+    assert low.census_sample_rate == 1
+    assert low.census_time_budget_ms == 200
+    assert low.dep_audit_max_files == 10
+    assert low.dep_audit_time_budget_ms == 200
     assert low.sample_interval_seconds == 10
     assert low.history_size == 30
     assert low.deep_scan_max_objects == 5_000
@@ -94,7 +124,10 @@ def test_integers_are_clamped_at_both_ends():
 
     high = Settings.from_config(
         {
-            "tracemalloc_frames": 9_999,
+            "census_sample_rate": 99_999,
+            "census_time_budget_ms": 99_999_999,
+            "dep_audit_max_files": 99_999,
+            "dep_audit_time_budget_ms": 99_999_999,
             "sample_interval_seconds": 99_999,
             "history_size": 99_999,
             "deep_scan_max_objects": 99_999_999,
@@ -103,7 +136,10 @@ def test_integers_are_clamped_at_both_ends():
             "command_top_n": 500,
         },
     )
-    assert high.tracemalloc_frames == 40
+    assert high.census_sample_rate == 1000
+    assert high.census_time_budget_ms == 60_000
+    assert high.dep_audit_max_files == 5000
+    assert high.dep_audit_time_budget_ms == 60_000
     assert high.sample_interval_seconds == 3600
     assert high.history_size == 5000
     assert high.deep_scan_max_objects == 2_000_000
@@ -114,58 +150,66 @@ def test_integers_are_clamped_at_both_ends():
 
 def test_negative_alert_thresholds_become_zero():
     settings = Settings.from_config(
-        {"alert_plugin_mb": -10, "alert_growth_mb_per_hour": -1.5},
+        {
+            "alert_plugin_mb": -10,
+            "alert_growth_mb_per_hour": -1.5,
+            "alert_rss_mb": -1,
+            "alert_rss_growth_mb_per_hour": -2,
+        },
     )
 
     assert settings.alert_plugin_mb == 0.0
     assert settings.alert_growth_mb_per_hour == 0.0
+    assert settings.alert_rss_mb == 0.0
+    assert settings.alert_rss_growth_mb_per_hour == 0.0
 
 
 def test_none_values_fall_back_to_defaults():
     settings = Settings.from_config(
         {
-            "tracemalloc_frames": None,
+            "measure_import_cost": None,
+            "census_sample_rate": None,
             "sample_interval_seconds": None,
             "alert_plugin_mb": None,
-            "auto_start_tracemalloc": None,
-            "auto_start_min_available_mb": None,
             "persist_history": None,
         },
     )
 
-    assert settings.tracemalloc_frames == DEFAULT_FRAMES
+    assert settings.measure_import_cost is True
+    assert settings.census_sample_rate == 10
     assert settings.sample_interval_seconds == 60
     assert settings.alert_plugin_mb == 0.0
-    assert settings.auto_start_tracemalloc is False
     assert settings.persist_history is True
 
 
 def test_unparsable_values_fall_back_to_defaults():
     settings = Settings.from_config(
         {
-            "tracemalloc_frames": "not-a-number",
+            "census_sample_rate": "not-a-number",
             "history_size": [1, 2, 3],
             "alert_plugin_mb": "soon",
             "command_top_n": {},
+            "import_hook_max_overhead_ms": "later",
         },
     )
 
-    assert settings.tracemalloc_frames == DEFAULT_FRAMES
+    assert settings.census_sample_rate == 10
     assert settings.history_size == 720
     assert settings.alert_plugin_mb == 0.0
     assert settings.command_top_n == 8
+    assert settings.import_hook_max_overhead_ms == DEFAULT_MAX_OVERHEAD_MS
 
 
 def test_numeric_strings_are_accepted():
     settings = Settings.from_config(
-        {"tracemalloc_frames": "16", "alert_plugin_mb": "128.5"},
+        {"census_sample_rate": "16", "alert_plugin_mb": "128.5"},
     )
 
-    assert settings.tracemalloc_frames == 16
+    assert settings.census_sample_rate == 16
     assert settings.alert_plugin_mb == 128.5
 
 
-def test_negative_memory_floor_becomes_zero_meaning_no_guard():
-    settings = Settings.from_config({"auto_start_min_available_mb": -5})
+def test_zero_overhead_budget_means_unlimited():
+    settings = Settings.from_config({"import_hook_max_overhead_ms": 0})
 
-    assert settings.auto_start_min_available_mb == 0.0
+    assert settings.import_hook_max_overhead_ms == 0.0
