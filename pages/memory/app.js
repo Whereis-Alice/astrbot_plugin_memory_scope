@@ -730,9 +730,15 @@ function renderAudit() {
   const report = state.report || {};
   const meta = report.audit_meta;
   const summary = el("audit-summary");
-  if (summary) summary.textContent = meta
-    ? `${t("audit.scanned", "扫描")} ${fmtCount(meta.audited)}/${fmtCount(meta.plugin_count)} · ${fmtMs(meta.elapsed_ms)} · ${t("audit.findings", "发现")} ${fmtCount(meta.finding_count)} ${t("audit.items", "处")}`
-    : t("audit.notRun", "尚未运行；首次加载通常会自动建立缓存。");
+  if (summary) {
+    if (!meta) {
+      summary.textContent = t("audit.notRun", "尚未运行；首次加载通常会自动建立缓存。");
+    } else {
+      const parts = [`${t("audit.scanned", "扫描")} ${fmtCount(meta.audited)}/${fmtCount(meta.plugin_count)}`, fmtMs(meta.elapsed_ms), `${t("audit.findings", "发现")} ${fmtCount(meta.finding_count)} ${t("audit.items", "处")}`];
+      if (meta.pending) parts.push(`${t("audit.pending", "还剩")} ${fmtCount(meta.pending)} ${t("audit.pendingTail", "个未扫，再跑一次会接着扫")}`);
+      summary.textContent = parts.join(" · ");
+    }
+  }
   const body = el("audit-body");
   const rows = (report.opportunities || []).slice();
   if (body) {

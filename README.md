@@ -142,7 +142,7 @@ git clone https://github.com/Whereis-Alice/astrbot_plugin_memory_scope
 | `import_hook_max_overhead_ms` | `5000` | 导入包装器自身开销预算；超出后自动降级，`0` 为不限制 |
 | `dep_audit_enabled` | `true` | 是否允许依赖审计；审计本身只读源码 |
 | `dep_audit_max_files` | `400` | 单次审计最多扫描的 Python 文件数 |
-| `dep_audit_time_budget_ms` | `2000` | 依赖审计时间预算 |
+| `dep_audit_time_budget_ms` | `4000` | 依赖审计时间预算，扫不完时再跑一次会接着扫 |
 | `census_enabled` | `false` | 是否让后台采样执行对象普查；小 VPS 建议关闭 |
 | `census_sample_rate` | `10` | 每 N 个 GC 对象取一个并放大估算，`1` 为全量 |
 | `census_time_budget_ms` | `4000` | 对象普查时间预算 |

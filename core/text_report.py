@@ -213,6 +213,9 @@ def render_audit(report: dict[str, Any], top_n: int = 12) -> str:
             f" · {format_ms(meta.get('elapsed_ms'))}"
             f" · 命中 {meta.get('finding_count', 0)} 处",
         )
+        pending = int(meta.get("pending") or 0)
+        if pending:
+            lines.append(f"还有 {pending} 个插件没扫完（超出时间预算），再跑一次会接着扫。")
     lines.append(f"若全部改成按需导入，可省 {format_bytes(totals.get('lazy_savings_bytes'))}")
     lines.extend(_notes(report))
     known = [row for row in rows if row.get("cost_bytes")]

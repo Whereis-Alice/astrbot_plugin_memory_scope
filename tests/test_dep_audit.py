@@ -171,6 +171,40 @@ def test_audit_marks_file_limit_and_preserves_guarded_flag(tmp_path):
     }
 
 
+def test_audit_ignores_test_only_sources(tmp_path):
+    """AstrBot never imports a plugin's tests, so pytest is not a runtime cost."""
+
+    plugin = make_plugin(tmp_path, "with_tests", "import heavy\n")
+    root = tmp_path / "with_tests"
+    (root / "conftest.py").write_text("import pytest\n", encoding="utf-8")
+    (root / "test_main.py").write_text("import pytest\n", encoding="utf-8")
+    (root / "helpers_test.py").write_text("import responses\n", encoding="utf-8")
+    (root / "tests").mkdir()
+    (root / "tests" / "helper.py").write_text("import hypothesis\n", encoding="utf-8")
+
+    result = DependencyAuditor().run([plugin], {"heavy": 10})
+    audit = result["audits"]["with_tests"]
+
+    assert audit.files == 1
+    assert [item.module for item in audit.imports] == ["heavy"]
+
+
+def test_audit_reports_how_many_plugins_the_time_budget_left_unscanned(tmp_path):
+    plugins = [
+        make_plugin(tmp_path, f"plugin_{index}", "import heavy\n") for index in range(3)
+    ]
+
+    result = DependencyAuditor(time_budget_ms=5000).run(plugins, {"heavy": 10})
+    assert result["pending"] == 0
+
+    auditor = DependencyAuditor()
+    auditor.time_budget_ms = -1  # force every entry past the deadline
+    starved = auditor.run(plugins, {"heavy": 10})
+
+    assert starved["time_budget_hit"] is True
+    assert starved["pending"] == 3
+    assert all(item.error == "time_budget" for item in starved["audits"].values())
+
 def test_raw_import_dataclass_is_small_and_serializable():
     item = RawImport("numpy", "sub/main.py", 7, False)
     assert item.top == "numpy"

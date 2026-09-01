@@ -160,7 +160,9 @@
         "notRun": "Not run yet; the first report normally creates a cache.",
         "empty": "No heavy dependency with a known cost was found",
         "emptyNotRun": "Dependency audit has not run",
-        "unknown": "Third-party modules without a measured cost were also found:"
+        "unknown": "Third-party modules without a measured cost were also found:",
+        "pending": "remaining",
+        "pendingTail": "not scanned; run again to continue"
       },
       "census": {
         "title": "Live object census",
@@ -199,7 +201,7 @@
         "census_sampled": "The object census is sampled and should be read as an estimate.",
         "census_truncated": "The object census hit its time budget and is smaller than reality.",
         "dep_audit_never_run": "The dependency audit has not run.",
-        "dep_audit_truncated": "The dependency audit hit its time budget; some source files were skipped.",
+        "dep_audit_truncated": "The dependency audit hit its time budget; scanned directories are cached, so running it again continues where it stopped.",
         "psutil_missing": "psutil is unavailable, so some process metrics are missing.",
         "rss_reader_unavailable": "Process RSS could not be read.",
         "deep_scan_truncated": "The reference scan hit a limit; retained values are lower bounds."

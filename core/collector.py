@@ -702,6 +702,7 @@ class MemoryCollector:
             "generated_at": audit_result.get("generated_at"),
             "elapsed_ms": audit_result.get("elapsed_ms"),
             "time_budget_hit": bool(audit_result.get("time_budget_hit")),
+            "pending": int(audit_result.get("pending") or 0),
             "cost_table_size": int(audit_result.get("cost_table_size") or 0),
             "plugin_count": len(audits),
             "audited": sum(1 for audit in audits.values() if audit.error is None),

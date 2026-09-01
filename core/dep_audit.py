@@ -36,10 +36,22 @@ SKIP_DIRS = frozenset(
         ".mypy_cache",
         ".pytest_cache",
         ".ruff_cache",
+        "tests",
+        "test",
+        "testing",
     },
 )
+# AstrBot never imports a plugin's test files, so their module-level imports are
+# not a runtime cost.  Counting them made dev-only packages (pytest above all)
+# surface as heavy shared dependencies.
+SKIP_FILE_PREFIXES = ("test_",)
+SKIP_FILE_SUFFIXES = ("_test.py",)
+SKIP_FILE_NAMES = frozenset({"conftest.py"})
 DEFAULT_MAX_FILES = 400
-DEFAULT_TIME_BUDGET_MS = 2000
+# A cold full scan of ~130 plugins costs about 6 s on a small VPS, so a single
+# pass may not finish.  Cached directories are near free, so re-running resumes
+# where the previous pass stopped.
+DEFAULT_TIME_BUDGET_MS = 4000
 
 
 @dataclass(slots=True)
@@ -169,6 +181,18 @@ def collect_module_level_imports(tree: ast.Module, relpath: str) -> list[RawImpo
     return found
 
 
+def _is_runtime_source(filename: str) -> bool:
+    """True for a .py file AstrBot may import while loading a plugin."""
+
+    if not filename.endswith(".py"):
+        return False
+    if filename in SKIP_FILE_NAMES:
+        return False
+    if filename.startswith(SKIP_FILE_PREFIXES):
+        return False
+    return not filename.endswith(SKIP_FILE_SUFFIXES)
+
+
 class DependencyAuditor:
     """Scans plugin trees, caches per-directory results by file signature."""
 
@@ -190,7 +214,7 @@ class DependencyAuditor:
         for dirpath, dirnames, filenames in os.walk(root):
             dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
             for filename in filenames:
-                if filename.endswith(".py"):
+                if _is_runtime_source(filename):
                     files.append(os.path.join(dirpath, filename))
             if len(files) > self.max_files:
                 break
@@ -276,6 +300,9 @@ class DependencyAuditor:
             "elapsed_ms": self.last_elapsed_ms,
             "generated_at": self.last_generated_at,
             "time_budget_hit": budget_hit,
+            "pending": sum(
+                1 for item in audits.values() if item.error == "time_budget"
+            ),
             "cost_table_size": len(costs),
         }
 

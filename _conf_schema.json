@@ -25,8 +25,9 @@
   },
   "dep_audit_time_budget_ms": {
     "description": "单次审计时间上限（毫秒）",
+    "hint": "冷启动下扫完 130 个插件在小内存 VPS 上约 6 秒，单次可能扫不完。已扫过的目录会缓存，再跑一次会接着扫，所以不必把预算调得很大。",
     "type": "int",
-    "default": 2000
+    "default": 4000
   },
   "census_enabled": {
     "description": "启用对象归属普查（默认关闭，会造成停顿）",
