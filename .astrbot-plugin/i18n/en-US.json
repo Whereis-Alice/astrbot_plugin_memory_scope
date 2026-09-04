@@ -359,6 +359,7 @@
         "peak": "Window peak",
         "points": "samples",
         "retained": "Attributed retained",
+        "retainedBars": "Attributed retained (bars, own scale)",
         "rss": "Resident RSS",
         "swap": "Swapped",
         "title": "Footprint trend",

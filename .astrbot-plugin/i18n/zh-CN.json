@@ -359,6 +359,7 @@
         "peak": "窗口峰值",
         "points": "个采样点",
         "retained": "归因保留",
+        "retainedBars": "归因保留（柱状 · 独立缩放）",
         "rss": "常驻 RSS",
         "swap": "换出",
         "title": "内存足迹趋势",

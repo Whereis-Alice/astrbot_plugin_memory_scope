@@ -916,7 +916,7 @@ function renderTrend() {
   if (legend) {
     const items = [legendItem("--pink", t("trend.footprint", "内存足迹"))];
     if (hasPss) items.push(legendItem("--violet", t("trend.rss", "常驻 RSS")));
-    if (hasRetained) items.push(legendItem("--blue", t("trend.retained", "归因保留")));
+    if (hasRetained) items.push(legendItem("--blue", t("trend.retainedBars", "归因保留（柱状 · 独立缩放）")));
     legend.innerHTML = items.join("");
   }
 
@@ -1354,7 +1354,9 @@ function renderImports() {
         tone: "violet",
         label: t("metric.hookWindow", "记录窗口"),
         bytes: hook.rss_growth_bytes,
-        delta: esc(hook.rss_source || t("status.unavailable", "RSS 不可用"))
+        delta: esc(hook.rss_source
+          ? t("hero.source", "当前来源：") + hook.rss_source
+          : t("status.unavailable", "RSS 不可用"))
           + "<br /><b>" + esc(t("metric.calls", "导入调用") + " " + fmtCount(hook.calls, "0")
             + " · " + t("metric.hookCost", "钩子开销") + " " + fmtMs(hook.overhead_ms)) + "</b>",
       }),
@@ -1542,9 +1544,11 @@ function alertKind(kind) {
 }
 
 function alertValue(item) {
+  /* Alert.value comes from the sampler in MB (or MB/hour for growth kinds), not bytes. */
   const value = num(item.value);
   if (value === null) return "—";
-  return /growth/.test(String(item.kind)) ? fmtRate(value) : fmtBytes(value);
+  const bytes = value * MB;
+  return /growth/.test(String(item.kind)) ? fmtRate(bytes / 60) : fmtBytes(bytes);
 }
 
 function renderAlerts() {
