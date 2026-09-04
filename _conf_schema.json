@@ -49,7 +49,7 @@
   },
   "sample_interval_seconds": {
     "description": "后台采样间隔（秒）",
-    "hint": "用于绘制 RSS 趋势曲线和触发增长告警。采样本身只读一次 /proc/self/statm（约 4 微秒），不做任何遍历。范围 10~3600。",
+    "hint": "用于绘制趋势曲线和触发增长告警。一次普通采样只读 /proc/self/statm（约 4 微秒）加 sys.getallocatedblocks()，不做任何遍历；smaps_rollup 与引用图扫描各有自己的节流间隔。范围 10~3600。",
     "type": "int",
     "default": 60
   },
@@ -61,7 +61,7 @@
   },
   "deep_scan_enabled": {
     "description": "启用引用图深度扫描",
-    "hint": "从插件实例与模块出发用 gc.get_referents 遍历引用图，统计其实际保留的对象大小（独占/共享）。约 7.4 微秒/对象，只在手动点击或 /mem deep 时执行，不参与后台采样。结果是下界。",
+    "hint": "从插件实例与模块出发用 gc.get_referents 遍历引用图，统计其实际保留的对象大小：只有它引用的算独占，被多个插件共享的按 1/N 均摊。约 7.4 微秒/对象。按下面的间隔在后台低占空比地跑，并对插件做轮转，不会有哪个大插件长期饿死其他插件。结果始终是下界，页面会明确给出覆盖率。",
     "type": "bool",
     "default": true
   },
@@ -81,15 +81,45 @@
     "type": "int",
     "default": 3000
   },
+  "deep_scan_interval_samples": {
+    "description": "每隔多少次采样自动跑一次引用图扫描",
+    "hint": "0 表示只在手动点击或 /mem deep 时才扫。默认 5，配合 60 秒采样间隔约等于每 5 分钟一次；插件的保留量以分钟为尺度变化，扫得更频繁只会白烧 CPU。重启后的第一次会提前到第 2 个采样点，避免仪表盘长时间空白。",
+    "type": "int",
+    "default": 5
+  },
+  "deep_scan_slice_ms": {
+    "description": "扫描时间切片长度（毫秒）",
+    "hint": "遍历会被切成若干片，每片最长这么久就让出控制权。切片越小对消息响应越友好，但总耗时略增。默认 15 毫秒，肉眼无感。",
+    "type": "int",
+    "default": 15
+  },
+  "deep_scan_duty_percent": {
+    "description": "扫描占空比（%）",
+    "hint": "每个时间切片之后按此比例休息：25 表示工作 15 毫秒、让出 45 毫秒，扫描最多只吃掉四分之一的核。小内存小核心的机器建议 20~25，机器宽裕可以调到 50 以上换取更快出结果；100 表示不休息（会明显抢占事件循环）。",
+    "type": "int",
+    "default": 25
+  },
   "include_object_count": {
     "description": "深度扫描时统计 GC 跟踪对象总数",
     "hint": "会调用 gc.get_objects()，在大进程上可能卡顿数百毫秒，默认关闭。",
     "type": "bool",
     "default": false
   },
+  "proc_smaps_enabled": {
+    "description": "读取 /proc/self/smaps_rollup 获取真实足迹",
+    "hint": "只有 RSS 是不够的：进程被换出的部分不算进 RSS。实测本机 RSS 601 MB，而 Pss+SwapPss 合计 973 MB，中间 372 MB 全在 swap 里。这项开启后趋势图才有“足迹”曲线，并能拿到 Private_Dirty 作为归因覆盖率的分母。代价是每次读约 5 毫秒（在后台线程里读，不阻塞事件循环），且按下面的最小间隔做了缓存。非 Linux 或内核不提供该文件时自动降级为只看 RSS。",
+    "type": "bool",
+    "default": true
+  },
+  "proc_smaps_min_interval_seconds": {
+    "description": "smaps_rollup 最小读取间隔（秒）",
+    "hint": "两次读取之间的缓存时长，防止页面频繁刷新时反复付那 5 毫秒。默认 30 秒，页面上会显示这份数据的实际年龄。",
+    "type": "float",
+    "default": 30
+  },
   "alert_rss_mb": {
     "description": "进程 RSS 告警阈值（MB）",
-    "hint": "0 表示不告警。这是最可靠的告警口径：RSS 是操作系统真正记账的数字。小内存机器建议设成物理内存的 60%~70%。",
+    "hint": "0 表示不告警。RSS 是操作系统真正记账的数字，但不含被换出的部分；真实压力请同时看页面上的足迹（Pss+SwapPss）。小内存机器建议设成物理内存的 60%~70%。",
     "type": "float",
     "default": 0
   },
@@ -101,7 +131,7 @@
   },
   "alert_plugin_mb": {
     "description": "单插件普查内存告警阈值（MB）",
-    "hint": "0 表示不告警。只在对象普查开启时才有数据，否则该规则永不触发。",
+    "hint": "0 表示不告警。数据来自对象普查，普查关闭时该规则永不触发；引用图扫描的保留量不参与这条阈值，因为两者口径不同。",
     "type": "float",
     "default": 0
   },

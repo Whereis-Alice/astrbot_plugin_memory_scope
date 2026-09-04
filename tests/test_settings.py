@@ -27,6 +27,15 @@ def test_defaults_from_empty_config():
     assert settings.deep_scan_max_objects == 120_000
     assert settings.deep_scan_max_objects_total == 400_000
     assert settings.deep_scan_time_budget_ms == 3000
+    # The scan is spread over every 5th tick and yields the GIL every 15 ms at a
+    # 25% duty cycle.  These three together are what keep it off the hot path.
+    assert settings.deep_scan_interval_samples == 5
+    assert settings.deep_scan_slice_ms == 15
+    assert settings.deep_scan_duty_percent == 25
+    # smaps_rollup is on by default but rate-limited: 5.4 ms per read is fine
+    # once every 30 s, and fatal on every request.
+    assert settings.proc_smaps_enabled is True
+    assert settings.proc_smaps_min_interval_seconds == 30.0
     assert settings.include_object_count is False
     assert settings.alert_plugin_mb == 0.0
     assert settings.alert_growth_mb_per_hour == 0.0
@@ -60,6 +69,11 @@ def test_values_are_read_from_the_config():
             "deep_scan_max_objects": 50_000,
             "deep_scan_max_objects_total": 200_000,
             "deep_scan_time_budget_ms": 1500,
+            "deep_scan_interval_samples": 20,
+            "deep_scan_slice_ms": 40,
+            "deep_scan_duty_percent": 60,
+            "proc_smaps_enabled": False,
+            "proc_smaps_min_interval_seconds": 5,
             "include_object_count": True,
             "alert_plugin_mb": 256.5,
             "alert_growth_mb_per_hour": 12.5,
@@ -85,6 +99,11 @@ def test_values_are_read_from_the_config():
     assert settings.deep_scan_max_objects == 50_000
     assert settings.deep_scan_max_objects_total == 200_000
     assert settings.deep_scan_time_budget_ms == 1500
+    assert settings.deep_scan_interval_samples == 20
+    assert settings.deep_scan_slice_ms == 40
+    assert settings.deep_scan_duty_percent == 60
+    assert settings.proc_smaps_enabled is False
+    assert settings.proc_smaps_min_interval_seconds == 5.0
     assert settings.include_object_count is True
     assert settings.alert_plugin_mb == 256.5
     assert settings.alert_growth_mb_per_hour == 12.5
@@ -108,6 +127,9 @@ def test_integers_are_clamped_at_both_ends():
             "deep_scan_max_objects": 1,
             "deep_scan_max_objects_total": 1,
             "deep_scan_time_budget_ms": 1,
+            "deep_scan_interval_samples": -5,
+            "deep_scan_slice_ms": 0,
+            "deep_scan_duty_percent": 0,
             "command_top_n": 0,
         },
     )
@@ -120,6 +142,11 @@ def test_integers_are_clamped_at_both_ends():
     assert low.deep_scan_max_objects == 5_000
     assert low.deep_scan_max_objects_total == 10_000
     assert low.deep_scan_time_budget_ms == 200
+    # 0 is a legal value here: it means manual-only, so it is not clamped up.
+    assert low.deep_scan_interval_samples == 0
+    assert low.deep_scan_slice_ms == 1
+    # A duty cycle below 5% would make the scan take minutes to finish.
+    assert low.deep_scan_duty_percent == 5
     assert low.command_top_n == 1
 
     high = Settings.from_config(
@@ -133,6 +160,9 @@ def test_integers_are_clamped_at_both_ends():
             "deep_scan_max_objects": 99_999_999,
             "deep_scan_max_objects_total": 99_999_999,
             "deep_scan_time_budget_ms": 99_999_999,
+            "deep_scan_interval_samples": 99_999,
+            "deep_scan_slice_ms": 99_999,
+            "deep_scan_duty_percent": 99_999,
             "command_top_n": 500,
         },
     )
@@ -145,6 +175,10 @@ def test_integers_are_clamped_at_both_ends():
     assert high.deep_scan_max_objects == 2_000_000
     assert high.deep_scan_max_objects_total == 8_000_000
     assert high.deep_scan_time_budget_ms == 60_000
+    assert high.deep_scan_interval_samples == 1000
+    assert high.deep_scan_slice_ms == 200
+    # 100% duty means "no yielding", which is the documented upper bound.
+    assert high.deep_scan_duty_percent == 100
     assert high.command_top_n == 30
 
 

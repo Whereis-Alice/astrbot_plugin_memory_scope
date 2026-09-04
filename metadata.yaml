@@ -1,7 +1,7 @@
 name: astrbot_plugin_memory_scope
 display_name: MemoryScope
-desc: AstrBot 内存去向分析：加载期逐插件导入成本归因（不用 tracemalloc）、重依赖顶层导入审计与惰性化收益估算、按对象归属的存活对象普查、引用图保留量深度扫描、进程 RSS/GC 趋势、基线对比与泄漏告警；内置 Dashboard 页面，命令入口 /mem。
+desc: AstrBot 内存去向分析：真实足迹口径（Pss+SwapPss，不再只看 RSS）、引用图保留量逐插件归因并公开覆盖率、加载期逐插件导入成本归因（不用 tracemalloc）、重依赖顶层导入审计与惰性化收益估算、按对象归属的存活对象普查、基线对比与泄漏告警；内置 Dashboard 页面，命令入口 /mem。
 author: Whereis-Alice
 repo: "https://github.com/Whereis-Alice/astrbot_plugin_memory_scope"
-version: 2.0.1
+version: 3.0.0
 astrbot_version: ">=4.16,<5"

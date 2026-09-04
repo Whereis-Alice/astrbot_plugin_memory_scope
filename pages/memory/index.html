@@ -1,219 +1,298 @@
 <!doctype html>
-<html lang="zh-CN" data-skin="dark">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>MemoryScope</title>
-    <link rel="stylesheet" href="./style.css" />
-  </head>
-  <body>
-    <div class="ms-app">
-      <header class="ms-top">
-        <div class="ms-brand">
-          <span class="ms-mark" aria-hidden="true">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" focusable="false">
-              <rect x="4" y="7" width="16" height="10" rx="2" />
-              <path d="M8 7V4M12 7V4M16 7V4M8 20v-3M12 20v-3M16 20v-3" />
-              <path d="M8.5 11.5h2.2l1.1 3 1.2-4.6 1 1.6h1.5" />
-            </svg>
-          </span>
-          <div class="ms-brand-text">
-            <h1 id="page-title">MemoryScope 内存观察</h1>
-            <p id="page-desc">用轻量探针观察进程、插件导入成本与运行时对象</p>
-          </div>
-        </div>
-        <div class="ms-top-actions">
-          <div class="ms-field">
-            <label id="auto-label" for="auto-select">自动刷新</label>
-            <select id="auto-select" class="ms-input"></select>
-          </div>
-          <div class="ms-field">
-            <label id="skin-label" for="skin-select">主题</label>
-            <select id="skin-select" class="ms-input"></select>
-          </div>
-          <button id="btn-refresh" class="ms-btn ms-btn-primary" type="button" data-i18n="action.refresh">刷新</button>
-          <button id="btn-deep" class="ms-btn" type="button" data-i18n="action.deep">引用图扫描</button>
-        </div>
-      </header>
+<html lang="zh-CN" data-theme="dark" data-skin="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>MemoryScope 内存观察</title>
+<link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+<div class="ambient" aria-hidden="true">
+  <span class="orb orb-a"></span>
+  <span class="orb orb-b"></span>
+  <span class="orb orb-c"></span>
+</div>
+<svg class="noise" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
+  <filter id="noise-filter">
+    <feTurbulence type="fractalNoise" baseFrequency="0.8" numOctaves="3" stitchTiles="stitch" />
+  </filter>
+  <rect width="100%" height="100%" filter="url(#noise-filter)" />
+</svg>
 
-      <section id="banner" class="ms-banner" hidden>
-        <span class="ms-banner-ico" aria-hidden="true">!</span>
-        <div class="ms-banner-body">
-          <strong id="banner-title"></strong>
-          <p id="banner-text"></p>
-        </div>
-      </section>
-
-      <nav class="ms-tabs" role="tablist" aria-label="MemoryScope">
-        <button class="ms-tab is-active" type="button" role="tab" data-tab="overview" aria-selected="true">
-          <span class="ms-tab-ico" aria-hidden="true">◧</span><span data-i18n="tab.overview">总览</span>
-        </button>
-        <button class="ms-tab" type="button" role="tab" data-tab="plugins" aria-selected="false">
-          <span class="ms-tab-ico" aria-hidden="true">▥</span><span data-i18n="tab.plugins">插件</span>
-        </button>
-        <button class="ms-tab" type="button" role="tab" data-tab="imports" aria-selected="false">
-          <span class="ms-tab-ico" aria-hidden="true">↗</span><span data-i18n="tab.imports">导入成本</span>
-        </button>
-        <button class="ms-tab" type="button" role="tab" data-tab="audit" aria-selected="false">
-          <span class="ms-tab-ico" aria-hidden="true">⌕</span><span data-i18n="tab.audit">依赖审计</span>
-        </button>
-        <button class="ms-tab" type="button" role="tab" data-tab="census" aria-selected="false">
-          <span class="ms-tab-ico" aria-hidden="true">◌</span><span data-i18n="tab.census">对象普查</span>
-        </button>
-        <button class="ms-tab" type="button" role="tab" data-tab="alerts" aria-selected="false">
-          <span class="ms-tab-ico" aria-hidden="true">◈</span><span data-i18n="tab.alerts">告警</span><span id="alert-badge" class="ms-badge" hidden>0</span>
-        </button>
-        <button class="ms-tab" type="button" role="tab" data-tab="help" aria-selected="false">
-          <span class="ms-tab-ico" aria-hidden="true">ℹ</span><span data-i18n="tab.help">指标说明</span>
-        </button>
-      </nav>
-
-      <main class="ms-panels">
-        <section class="ms-panel is-active" id="panel-overview" role="tabpanel">
-          <div class="ms-cards" id="cards"></div>
-          <div class="ms-grid2">
-            <section class="ms-card ms-card-wide">
-              <header class="ms-card-head">
-                <div>
-                  <h2 data-i18n="chart.rssTitle">进程 RSS 趋势</h2>
-                  <p class="ms-card-caption" id="rss-caption"></p>
-                </div>
-                <div class="ms-card-tools">
-                  <button id="btn-baseline-set" class="ms-btn ms-btn-ghost ms-btn-sm" type="button" data-i18n="action.baselineSet">设为基线</button>
-                  <button id="btn-baseline-clear" class="ms-btn ms-btn-ghost ms-btn-sm" type="button" data-i18n="action.baselineClear">清除基线</button>
-                  <button id="btn-gc" class="ms-btn ms-btn-ghost ms-btn-sm" type="button" data-i18n="action.gc">手动 GC</button>
-                </div>
-              </header>
-              <div id="rss-chart" class="ms-chart"></div>
-            </section>
-            <section class="ms-card">
-              <header class="ms-card-head">
-                <div>
-                  <h2 data-i18n="chart.topTitle">当前重点插件</h2>
-                  <p class="ms-card-caption" id="top-caption"></p>
-                </div>
-              </header>
-              <div id="top-bars" class="ms-bars"></div>
-            </section>
-          </div>
-          <div class="ms-grid2">
-            <section class="ms-card">
-              <header class="ms-card-head"><h2 data-i18n="breakdown.title">对象普查来源</h2></header>
-              <p class="ms-hint" id="breakdown-hint"></p>
-              <div id="breakdown-bars" class="ms-bars"></div>
-            </section>
-            <section class="ms-card">
-              <header class="ms-card-head"><h2 data-i18n="probe.title">探针状态</h2></header>
-              <div id="probe-status" class="ms-status-list"></div>
-            </section>
-          </div>
-        </section>
-
-        <section class="ms-panel" id="panel-plugins" role="tabpanel">
-          <div class="ms-toolbar">
-            <input id="search" class="ms-input ms-search" type="search" placeholder="搜索插件名…" />
-            <span id="plugin-count" class="ms-chip ms-chip-quiet"></span>
-            <span id="census-state" class="ms-chip"></span>
-            <span id="deep-state" class="ms-chip"></span>
-          </div>
-          <p class="ms-hint" id="plugin-hint"></p>
-          <div class="ms-table-wrap">
-            <table class="ms-table" id="plugin-table">
-              <thead><tr id="plugin-head"></tr></thead>
-              <tbody id="plugin-body"></tbody>
-            </table>
-          </div>
-        </section>
-
-        <section class="ms-panel" id="panel-imports" role="tabpanel">
-          <div class="ms-section-head">
-            <div>
-              <h2 data-i18n="imports.title">加载期导入成本</h2>
-              <p class="ms-hint" data-i18n="imports.desc">只在启动阶段短暂记录 RSS 差分，页面刷新不会继续包裹导入函数。</p>
-            </div>
-          </div>
-          <div id="import-cards" class="ms-cards ms-cards-compact"></div>
-          <section class="ms-card">
-            <header class="ms-card-head"><h2 data-i18n="imports.packages">首次加载的第三方包</h2></header>
-            <p class="ms-hint" id="package-hint"></p>
-            <div class="ms-table-wrap ms-table-inner">
-              <table class="ms-table"><thead><tr id="package-head"></tr></thead><tbody id="package-body"></tbody></table>
-            </div>
-          </section>
-          <section class="ms-card">
-            <header class="ms-card-head"><h2 data-i18n="imports.plugins">插件加载汇总</h2></header>
-            <div class="ms-table-wrap ms-table-inner">
-              <table class="ms-table"><thead><tr id="import-plugin-head"></tr></thead><tbody id="import-plugin-body"></tbody></table>
-            </div>
-          </section>
-        </section>
-
-        <section class="ms-panel" id="panel-audit" role="tabpanel">
-          <section class="ms-card">
-            <header class="ms-card-head">
-              <div>
-                <h2 data-i18n="audit.title">顶层依赖审计</h2>
-                <p class="ms-hint" id="audit-summary"></p>
-              </div>
-              <button id="btn-audit" class="ms-btn ms-btn-primary ms-btn-sm" type="button" data-i18n="action.audit">重新审计</button>
-            </header>
-            <p class="ms-hint" data-i18n="audit.desc">扫描源代码中模块顶层的重依赖；把不必开机加载的包移到函数内，才可能减少启动期内存。</p>
-            <div class="ms-table-wrap ms-table-inner">
-              <table class="ms-table"><thead><tr id="audit-head"></tr></thead><tbody id="audit-body"></tbody></table>
-            </div>
-            <div id="audit-unknown" class="ms-callout" hidden></div>
-          </section>
-        </section>
-
-        <section class="ms-panel" id="panel-census" role="tabpanel">
-          <section class="ms-card">
-            <header class="ms-card-head">
-              <div>
-                <h2 data-i18n="census.title">运行时对象普查</h2>
-                <p class="ms-hint" id="census-summary"></p>
-              </div>
-              <button id="btn-census" class="ms-btn ms-btn-primary ms-btn-sm" type="button" data-i18n="action.census">运行一次</button>
-            </header>
-            <div id="census-warning" class="ms-callout ms-callout-warn"></div>
-            <div id="census-plugin-bars" class="ms-bars ms-bars-large"></div>
-            <h3 class="ms-subheading" data-i18n="census.buckets">其他对象来源</h3>
-            <div id="census-bucket-bars" class="ms-bars"></div>
-          </section>
-        </section>
-
-        <section class="ms-panel" id="panel-alerts" role="tabpanel">
-          <section class="ms-card">
-            <header class="ms-card-head"><h2 data-i18n="alerts.title">告警记录</h2></header>
-            <p class="ms-hint" id="alerts-summary"></p>
-            <div id="alerts" class="ms-list"></div>
-          </section>
-        </section>
-
-        <section class="ms-panel" id="panel-help" role="tabpanel">
-          <section class="ms-card">
-            <header class="ms-card-head"><h2 data-i18n="help.title">怎么看这些数字</h2></header>
-            <dl class="ms-help" id="help-list"></dl>
-          </section>
-          <section class="ms-card">
-            <header class="ms-card-head"><h2 data-i18n="help.safetyTitle">小内存机器建议</h2></header>
-            <ul class="ms-bullets" id="safety-list"></ul>
-          </section>
-        </section>
-      </main>
+<div class="shell">
+  <header class="topbar">
+    <div class="brand">
+      <span class="mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="4.5" y="4.5" width="15" height="15" rx="4.2" />
+          <rect x="9.2" y="9.2" width="5.6" height="5.6" rx="1.6" />
+          <path d="M12 2.4v2.1M12 19.5v2.1M2.4 12h2.1M19.5 12h2.1M7.6 2.7v1.8M16.4 2.7v1.8M7.6 19.5v1.8M16.4 19.5v1.8" />
+        </svg>
+      </span>
+      <span class="brand-text">
+        <strong id="page-title">MemoryScope 内存观察</strong>
+        <small id="page-desc">用轻量探针观察进程、插件导入成本与运行时对象</small>
+      </span>
     </div>
+    <nav class="nav" role="tablist" aria-label="MemoryScope">
+      <button class="nav-btn is-active" type="button" data-tab="overview" role="tab" aria-selected="true" data-i18n="tab.overview">总览</button>
+      <button class="nav-btn" type="button" data-tab="plugins" role="tab" aria-selected="false" data-i18n="tab.plugins">插件</button>
+      <button class="nav-btn" type="button" data-tab="imports" role="tab" aria-selected="false" data-i18n="tab.imports">导入成本</button>
+      <button class="nav-btn" type="button" data-tab="audit" role="tab" aria-selected="false" data-i18n="tab.audit">依赖审计</button>
+      <button class="nav-btn" type="button" data-tab="census" role="tab" aria-selected="false" data-i18n="tab.census">对象普查</button>
+      <button class="nav-btn" type="button" data-tab="alerts" role="tab" aria-selected="false"><span data-i18n="tab.alerts">告警</span><span id="alert-badge" class="badge" hidden>0</span></button>
+      <button class="nav-btn" type="button" data-tab="help" role="tab" aria-selected="false" data-i18n="tab.help">口径说明</button>
+    </nav>
+    <div class="topbar-actions">
+      <label class="field"><span id="auto-label">自动刷新</span><select id="auto-select" class="select"></select></label>
+      <label class="field"><span id="skin-label">主题</span><select id="skin-select" class="select"></select></label>
+      <button id="btn-deep" class="btn btn-ghost btn-sm" type="button" data-i18n="action.deep">引用图扫描</button>
+      <button id="btn-refresh" class="btn btn-primary btn-sm" type="button" data-i18n="action.refresh">刷新</button>
+    </div>
+  </header>
 
-    <div id="drawer" class="ms-drawer" hidden>
-      <div class="ms-drawer-scrim" data-close="1"></div>
-      <aside class="ms-drawer-body" role="dialog" aria-modal="true" aria-labelledby="drawer-title">
-        <header class="ms-drawer-head">
-          <h2 id="drawer-title">插件详情</h2>
-          <button id="drawer-close" class="ms-btn ms-btn-ghost ms-btn-sm" type="button" data-i18n="action.close">关闭</button>
+  <div id="banner" class="banner" data-level="info" hidden>
+    <span class="banner-dot" aria-hidden="true"></span>
+    <div class="banner-body">
+      <strong id="banner-title">测量说明</strong>
+      <p id="banner-text"></p>
+    </div>
+  </div>
+
+  <main class="panels">
+    <section id="panel-overview" class="panel is-active" role="tabpanel">
+      <article class="card hero">
+        <div class="hero-main">
+          <span class="eyebrow" data-i18n="hero.eyebrow">PROCESS FOOTPRINT</span>
+          <h1><span id="hero-value">—</span><em id="hero-unit"></em></h1>
+          <p id="hero-lead" class="hero-lead"></p>
+          <div id="hero-tags" class="hero-tags"></div>
+        </div>
+        <div id="hero-side" class="hero-side"></div>
+      </article>
+
+      <div id="metrics" class="metrics"></div>
+
+      <div class="dashboard-grid">
+        <article class="card trend-panel">
+          <header class="card-head">
+            <div class="card-title">
+              <h2 data-i18n="trend.title">内存足迹趋势</h2>
+              <p id="trend-caption" class="card-sub"></p>
+            </div>
+            <div class="card-actions">
+              <div id="trend-legend" class="legend"></div>
+              <button id="btn-baseline-set" class="btn btn-ghost btn-xs" type="button" data-i18n="action.baselineSet">设为基线</button>
+              <button id="btn-baseline-clear" class="btn btn-ghost btn-xs" type="button" data-i18n="action.baselineClear">清除基线</button>
+              <button id="btn-gc" class="btn btn-ghost btn-xs" type="button" data-i18n="action.gc">强制 GC</button>
+            </div>
+          </header>
+          <div id="trend-chart" class="chart"></div>
+          <div id="trend-summary" class="trend-summary"></div>
+        </article>
+        <div class="side-stack">
+          <article class="card">
+            <header class="card-head">
+              <div class="card-title">
+                <h2 data-i18n="top.title">占用最高的插件</h2>
+                <p id="top-caption" class="card-sub"></p>
+              </div>
+            </header>
+            <div id="top-bars" class="bar-list"></div>
+          </article>
+          <article class="card">
+            <header class="card-head">
+              <div class="card-title">
+                <h2 data-i18n="probe.title">探针状态</h2>
+                <p class="card-sub" data-i18n="probe.sub">默认只跑最便宜的探针；贵的那几个是手动按钮。</p>
+              </div>
+            </header>
+            <div id="probe-status" class="status-list"></div>
+          </article>
+        </div>
+      </div>
+
+      <div class="dashboard-grid grid-even">
+        <article class="card">
+          <header class="card-head">
+            <div class="card-title">
+              <h2 data-i18n="attribution.title">归因构成</h2>
+              <p id="attribution-caption" class="card-sub"></p>
+            </div>
+          </header>
+          <div id="attribution-stack" class="stack-bar"></div>
+          <div id="attribution-grid" class="mini-grid"></div>
+        </article>
+        <article class="card">
+          <header class="card-head">
+            <div class="card-title">
+              <h2 data-i18n="breakdown.title">对象普查来源</h2>
+              <p id="breakdown-hint" class="card-sub"></p>
+            </div>
+          </header>
+          <div id="breakdown-bars" class="bar-list"></div>
+        </article>
+      </div>
+    </section>
+
+    <section id="panel-plugins" class="panel" role="tabpanel">
+      <article class="card">
+        <header class="card-head">
+          <div class="card-title">
+            <h2 data-i18n="tab.plugins">插件</h2>
+            <p id="plugin-hint" class="card-sub"></p>
+          </div>
+          <div class="card-actions">
+            <input id="search" class="input" type="search" autocomplete="off" spellcheck="false" placeholder="搜索插件名…" />
+            <span id="plugin-count" class="pill info"></span>
+            <span id="census-state" class="pill"></span>
+            <span id="deep-state" class="pill"></span>
+          </div>
         </header>
-        <div id="drawer-content" class="ms-drawer-content"></div>
-      </aside>
-    </div>
+        <div class="table-wrap">
+          <table class="table">
+            <thead><tr id="plugin-head"></tr></thead>
+            <tbody id="plugin-body"></tbody>
+          </table>
+        </div>
+      </article>
+    </section>
 
-    <div id="toast" class="ms-toast" hidden></div>
-    <script type="module" src="./app.js"></script>
-  </body>
+    <section id="panel-imports" class="panel" role="tabpanel">
+      <div id="import-cards" class="metrics metrics-3"></div>
+      <article class="card">
+        <header class="card-head">
+          <div class="card-title">
+            <h2 data-i18n="imports.packageTitle">第三方包</h2>
+            <p id="package-hint" class="card-sub"></p>
+          </div>
+        </header>
+        <div class="table-wrap">
+          <table class="table">
+            <thead><tr id="package-head"></tr></thead>
+            <tbody id="package-body"></tbody>
+          </table>
+        </div>
+      </article>
+      <article class="card">
+        <header class="card-head">
+          <div class="card-title">
+            <h2 data-i18n="imports.pluginTitle">按插件分摊</h2>
+            <p class="card-sub" data-i18n="imports.pluginSub">导入成本是启动期 RSS 差分，不等于当前独占内存。</p>
+          </div>
+        </header>
+        <div class="table-wrap">
+          <table class="table">
+            <thead><tr id="import-plugin-head"></tr></thead>
+            <tbody id="import-plugin-body"></tbody>
+          </table>
+        </div>
+      </article>
+    </section>
+
+    <section id="panel-audit" class="panel" role="tabpanel">
+      <article class="card">
+        <header class="card-head">
+          <div class="card-title">
+            <h2 data-i18n="tab.audit">依赖审计</h2>
+            <p id="audit-summary" class="card-sub"></p>
+          </div>
+          <div class="card-actions">
+            <button id="btn-audit" class="btn btn-primary btn-sm" type="button" data-i18n="action.audit">运行审计</button>
+          </div>
+        </header>
+        <div class="table-wrap">
+          <table class="table">
+            <thead><tr id="audit-head"></tr></thead>
+            <tbody id="audit-body"></tbody>
+          </table>
+        </div>
+        <p id="audit-unknown" class="callout" hidden></p>
+      </article>
+    </section>
+
+    <section id="panel-census" class="panel" role="tabpanel">
+      <article class="card">
+        <header class="card-head">
+          <div class="card-title">
+            <h2 data-i18n="tab.census">对象普查</h2>
+            <p id="census-summary" class="card-sub"></p>
+          </div>
+          <div class="card-actions">
+            <button id="btn-census" class="btn btn-primary btn-sm" type="button" data-i18n="action.census">运行普查</button>
+          </div>
+        </header>
+        <p id="census-warning" class="callout callout-warn"></p>
+      </article>
+      <div class="dashboard-grid grid-even">
+        <article class="card">
+          <header class="card-head">
+            <div class="card-title">
+              <h2 data-i18n="census.byPlugin">按插件</h2>
+              <p class="card-sub" data-i18n="census.byPluginSub">按类型所属模块归属的浅层大小。</p>
+            </div>
+          </header>
+          <div id="census-plugin-bars" class="bar-list tall"></div>
+        </article>
+        <article class="card">
+          <header class="card-head">
+            <div class="card-title">
+              <h2 data-i18n="census.byBucket">其他来源</h2>
+              <p class="card-sub" data-i18n="census.byBucketSub">无法归属到插件的对象按来源聚合。</p>
+            </div>
+          </header>
+          <div id="census-bucket-bars" class="bar-list tall"></div>
+        </article>
+      </div>
+    </section>
+
+    <section id="panel-alerts" class="panel" role="tabpanel">
+      <article class="card">
+        <header class="card-head">
+          <div class="card-title">
+            <h2 data-i18n="tab.alerts">告警</h2>
+            <p id="alerts-summary" class="card-sub"></p>
+          </div>
+        </header>
+        <div id="alerts" class="alert-list"></div>
+      </article>
+    </section>
+
+    <section id="panel-help" class="panel" role="tabpanel">
+      <article class="card">
+        <header class="card-head">
+          <div class="card-title">
+            <h2 data-i18n="help.title">指标口径</h2>
+            <p class="card-sub" data-i18n="help.sub">每个数字都写清楚它到底测了什么，以及它测不到什么。</p>
+          </div>
+        </header>
+        <dl id="help-list" class="help-list"></dl>
+      </article>
+      <article class="card">
+        <header class="card-head">
+          <div class="card-title">
+            <h2 data-i18n="help.safetyTitle">在小机器上的注意事项</h2>
+            <p class="card-sub" data-i18n="help.safetySub">这个插件默认不做任何会拖慢 AstrBot 的事。</p>
+          </div>
+        </header>
+        <ul id="safety-list" class="safety-list"></ul>
+      </article>
+    </section>
+  </main>
+</div>
+
+<div id="drawer" class="drawer" hidden>
+  <div class="drawer-scrim" data-close="1"></div>
+  <aside class="drawer-body" role="dialog" aria-modal="true" aria-labelledby="drawer-title">
+    <header class="drawer-head">
+      <h2 id="drawer-title">插件详情</h2>
+      <button id="drawer-close" class="btn btn-ghost btn-sm" type="button" data-i18n="action.close">关闭</button>
+    </header>
+    <div id="drawer-content" class="drawer-content"></div>
+  </aside>
+</div>
+
+<div id="toast" class="toast" data-kind="ok" hidden></div>
+<script type="module" src="./app.js"></script>
+</body>
 </html>

@@ -18,6 +18,9 @@ NOTE_TEXT = {
     "psutil_missing": "⚠ 未安装 psutil，部分进程级数据不可用",
     "rss_reader_unavailable": "⚠ 无法读取进程 RSS，导入成本测量不可用",
     "deep_scan_truncated": "⚠ 引用图深扫因限额截断，结果为下界",
+    "smaps_unavailable": "ℹ 内核未提供 smaps_rollup，只能看 RSS，被换出的部分不计入",
+    "retained_never_run": "ℹ 引用图归因尚未跑过第一轮（/mem deep 可立刻触发）",
+    "retained_partial": "ℹ 本轮有插件未扫完，会在后续轮次补上（轮转扫描）",
 }
 
 
@@ -91,7 +94,19 @@ def render_overview(report: dict[str, Any], top_n: int = 8) -> str:
     lines: list[str] = ["📊 MemoryScope 内存概览"]
 
     percent = process.get("memory_percent")
-    head = f"进程 RSS {format_bytes(process.get('rss_bytes'))}"
+    rss_text = format_bytes(process.get("rss_bytes"))
+    footprint = int(process.get("footprint_bytes") or 0)
+    if footprint:
+        # RSS alone understates a swapping process.  Lead with Pss+SwapPss and
+        # keep RSS next to it so the gap (= what the kernel paged out) is
+        # visible instead of silently missing.
+        head = f"真实足迹 {format_bytes(footprint)}（RSS {rss_text}"
+        swap_pss = int(process.get("swap_pss_bytes") or 0)
+        if swap_pss:
+            head += f" · 已换出 {format_bytes(swap_pss)}"
+        head += "）"
+    else:
+        head = f"进程 RSS {rss_text}"
     if isinstance(percent, (int, float)):
         head += f" · 占系统 {percent:.1f}%"
     if process.get("threads"):
@@ -126,12 +141,26 @@ def render_overview(report: dict[str, Any], top_n: int = 8) -> str:
             f" · {totals.get('census_objects', 0)} 个对象",
         )
 
+    attribution = report.get("attribution") or {}
+    if totals.get("retained_bytes"):
+        line = (
+            f"引用图归因 {format_bytes(totals['retained_bytes'])}"
+            f"（独占 {format_bytes(totals.get('retained_exclusive_bytes'))}"
+            f" + 共享均摊 {format_bytes(totals.get('retained_shared_bytes'))}）"
+        )
+        coverage = attribution.get("coverage_percent")
+        if coverage is not None:
+            line += f" · 覆盖 Private_Dirty 的 {coverage}%"
+        lines.append(line)
+
     lines.extend(_notes(report))
 
     rows = [
         row
         for row in (report.get("plugins") or [])
-        if row.get("import_bytes") or row.get("census_bytes")
+        if row.get("retained_bytes")
+        or row.get("import_bytes")
+        or row.get("census_bytes")
     ]
     lines.append("")
     if not rows:
@@ -149,6 +178,8 @@ def render_overview(report: dict[str, Any], top_n: int = 8) -> str:
             parts.append(f"依赖 {len(packages)} 包")
         if row.get("import_ms"):
             parts.append(format_ms(row["import_ms"]))
+        if row.get("retained_bytes"):
+            parts.append(f"保留 {format_bytes(row['retained_bytes'])}")
         if row.get("census_bytes"):
             parts.append(f"对象 {format_bytes(row['census_bytes'])}")
         delta = format_delta(row.get("delta_bytes"))

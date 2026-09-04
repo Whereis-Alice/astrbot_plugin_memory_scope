@@ -13,12 +13,12 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
-from . import retained_scan
+from . import proc_memory, retained_scan
 from .dep_audit import DEFAULT_MAX_FILES, DEFAULT_TIME_BUDGET_MS, DependencyAuditor
 from .import_cost import DEFAULT_MAX_OVERHEAD_MS, RssReader, get_ledger
 from .object_census import CensusResult, run_census
 from .plugin_registry import PluginRegistry
-from .retained_scan import ScanLimits
+from .retained_scan import RetainedScanner, ScanLimits
 from .sampler import AlertEngine, HistoryStore, Sample
 
 try:  # psutil ships with AstrBot, but never let a monitoring plugin hard-fail.
@@ -120,6 +120,16 @@ class Settings:
     deep_scan_max_objects: int = 120_000
     deep_scan_max_objects_total: int = 400_000
     deep_scan_time_budget_ms: int = 3000
+    #: How many sampler ticks between automatic retained scans.  0 keeps the
+    #: scan manual-only.
+    deep_scan_interval_samples: int = 5
+    #: Milliseconds the scan may hold the GIL before it yields.
+    deep_scan_slice_ms: int = 15
+    #: Share of wall time the scan may occupy while it runs.
+    deep_scan_duty_percent: int = 25
+    #: Read /proc/self/smaps_rollup for Pss and SwapPss.
+    proc_smaps_enabled: bool = True
+    proc_smaps_min_interval_seconds: float = 30.0
     include_object_count: bool = False
     alert_plugin_mb: float = 0.0
     alert_growth_mb_per_hour: float = 0.0
@@ -193,6 +203,15 @@ class Settings:
                 "deep_scan_max_objects_total", 400_000, 10_000, 8_000_000,
             ),
             deep_scan_time_budget_ms=as_int("deep_scan_time_budget_ms", 3000, 200, 60_000),
+            deep_scan_interval_samples=as_int(
+                "deep_scan_interval_samples", 5, 0, 1000,
+            ),
+            deep_scan_slice_ms=as_int("deep_scan_slice_ms", 15, 1, 200),
+            deep_scan_duty_percent=as_int("deep_scan_duty_percent", 25, 5, 100),
+            proc_smaps_enabled=as_bool("proc_smaps_enabled", True),
+            proc_smaps_min_interval_seconds=as_float(
+                "proc_smaps_min_interval_seconds", 30.0,
+            ),
             include_object_count=as_bool("include_object_count", False),
             alert_plugin_mb=as_float("alert_plugin_mb", 0.0),
             alert_growth_mb_per_hour=as_float("alert_growth_mb_per_hour", 0.0),
@@ -223,6 +242,10 @@ class MemoryCollector:
             time_budget_ms=settings.dep_audit_time_budget_ms,
         )
         self.rss = RssReader()
+        self.smaps = proc_memory.SmapsRollupReader(
+            settings.proc_smaps_min_interval_seconds,
+        )
+        self.scanner = RetainedScanner()
         self.history = HistoryStore(settings.history_size)
         self.alerts = AlertEngine(
             settings.alert_plugin_mb,
@@ -239,6 +262,9 @@ class MemoryCollector:
         self._last_deep_ts = 0.0
         self._last_deep_elapsed = 0.0
         self._last_deep_truncated = False
+        self._last_deep_coverage: dict[str, Any] | None = None
+        self._samples_since_deep = 0
+        self._deep_rounds = 0
         # Alerts fired by the most recent recorded sample, consumed by main.py.
         self.last_alerts: list[Any] = []
         self.registry.refresh()
@@ -252,6 +278,9 @@ class MemoryCollector:
         self.ledger.max_overhead_ms = settings.import_hook_max_overhead_ms
         self.auditor.max_files = settings.dep_audit_max_files
         self.auditor.time_budget_ms = settings.dep_audit_time_budget_ms
+        self.smaps.min_interval_seconds = max(
+            0.0, float(settings.proc_smaps_min_interval_seconds),
+        )
         max_samples = max(30, settings.history_size)
         if self.history.max_samples != max_samples:
             old_samples = self.history.samples(max_samples)
@@ -350,6 +379,15 @@ class MemoryCollector:
                 2,
             )
 
+        # smaps_rollup costs milliseconds, so this only ever reads the cache
+        # that _collect_blocking primed on the worker thread.  The age field
+        # travels with it so the UI can say how stale the number is.
+        if self.settings.proc_smaps_enabled:
+            rollup = self.smaps.read()
+            for key, value in rollup.items():
+                if value is not None:
+                    stats[key] = value
+
         counts = gc.get_count()
         stats["gc"] = {
             "counts": list(counts),
@@ -358,7 +396,11 @@ class MemoryCollector:
                 int(entry.get("collections", 0)) for entry in gc.get_stats()
             ],
             "uncollectable": len(gc.garbage),
+            # Exact, free, and the only counter that catches a leak the
+            # allocator is still hiding inside arenas it already owns.
+            "allocated_blocks": sys.getallocatedblocks(),
         }
+        stats["allocated_blocks"] = stats["gc"]["allocated_blocks"]
         if include_object_count:
             try:
                 stats["gc"]["tracked_objects"] = len(gc.get_objects())
@@ -379,6 +421,7 @@ class MemoryCollector:
         ]
         if not entries:
             self._last_deep = {}
+            self._samples_since_deep = 0
             return {}
 
         star_objects = [entry.star_cls for entry in entries if entry.star_cls is not None]
@@ -405,13 +448,15 @@ class MemoryCollector:
             if roots:
                 roots_by_plugin[entry.name] = roots
 
-        report = retained_scan.scan(
+        report = self.scanner.scan(
             roots_by_plugin,
             denylist,
             ScanLimits(
                 max_objects_per_plugin=self.settings.deep_scan_max_objects,
                 max_objects_total=self.settings.deep_scan_max_objects_total,
                 time_budget_ms=self.settings.deep_scan_time_budget_ms,
+                slice_ms=self.settings.deep_scan_slice_ms,
+                duty_percent=self.settings.deep_scan_duty_percent,
             ),
         )
         self._last_deep = {
@@ -420,6 +465,9 @@ class MemoryCollector:
         self._last_deep_ts = time.time()
         self._last_deep_elapsed = round(report.elapsed_ms, 1)
         self._last_deep_truncated = report.truncated
+        self._last_deep_coverage = report.coverage()
+        self._samples_since_deep = 0
+        self._deep_rounds += 1
         return self._last_deep
 
     def _census_blocking(self) -> CensusResult:
@@ -442,6 +490,10 @@ class MemoryCollector:
         census: bool,
         audit: bool,
     ) -> dict[str, Any]:
+        # Refresh the 5 ms procfs read here, in the worker thread, so that
+        # process_stats() only ever touches a warm cache on the event loop.
+        if self.settings.proc_smaps_enabled:
+            self.smaps.read()
         if census:
             self._census_blocking()
         if audit:
@@ -456,6 +508,8 @@ class MemoryCollector:
                 "elapsed_ms": self._last_deep_elapsed or None,
                 "truncated": self._last_deep_truncated,
                 "fresh": bool(deep),
+                "rounds": self._deep_rounds,
+                "coverage": self._last_deep_coverage,
             },
         }
 
@@ -521,7 +575,10 @@ class MemoryCollector:
                 # be copied into every later RSS-only sample.  Otherwise a
                 # manual one-off census would create a flat, fictitious trend.
                 sample_census = census_result if run_census_now else None
-                self._record_sample(process, sample_census, rows)
+                # Same rule for the retained graph: a reused (cached) scan must
+                # not be replayed into later samples as if it were fresh.
+                sample_retained = raw["deep"] if deep else None
+                self._record_sample(process, sample_census, rows, sample_retained)
             hook = self.ledger.snapshot(package_limit=0)
             opportunities = list((audit_result or {}).get("opportunities") or [])
             payload: dict[str, Any] = {
@@ -558,11 +615,39 @@ class MemoryCollector:
                         int(row.get("cost_bytes") or 0) for row in opportunities
                     ),
                     "rss_bytes": int(process.get("rss_bytes") or 0),
+                    # Retained-graph attribution: the only number here that is
+                    # an actual per-plugin measurement rather than a proxy.
+                    "retained_bytes": sum(
+                        int((scan or {}).get("total_bytes") or 0)
+                        for scan in raw["deep"].values()
+                    ),
+                    "retained_exclusive_bytes": sum(
+                        int((scan or {}).get("exclusive_bytes") or 0)
+                        for scan in raw["deep"].values()
+                    ),
+                    "retained_shared_bytes": sum(
+                        int((scan or {}).get("shared_bytes") or 0)
+                        for scan in raw["deep"].values()
+                    ),
+                    # Pss + SwapPss.  RSS alone hides everything the kernel has
+                    # already pushed out to swap, which on a 1.6 GB VPS is most
+                    # of the interesting growth.
+                    "footprint_bytes": int(process.get("footprint_bytes") or 0),
+                    "pss_bytes": int(process.get("pss_bytes") or 0),
+                    "swap_pss_bytes": int(process.get("swap_pss_bytes") or 0),
+                    "private_dirty_bytes": int(
+                        process.get("private_dirty_bytes") or 0,
+                    ),
+                    "allocated_blocks": int(process.get("allocated_blocks") or 0),
                 },
                 "deep_meta": raw["deep_meta"],
+                "attribution": self._build_attribution(
+                    process, raw["deep"], raw["deep_meta"],
+                ),
                 "history": {
                     "samples": self.history.count(),
                     "census_samples": len(self.history.census_samples()),
+                    "retained_samples": len(self.history.retained_samples()),
                     "interval_seconds": self.settings.sample_interval_seconds,
                     "baseline_at": (
                         self.history.baseline.ts if self.history.baseline else None
@@ -577,19 +662,72 @@ class MemoryCollector:
                 )
             return payload
 
+    def _build_attribution(
+        self,
+        process: dict[str, Any],
+        deep_results: dict[str, dict[str, Any]],
+        deep_meta: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Summarise how much of the process we can actually account for.
+
+        This is the honest-numbers block.  measured_bytes is what the retained
+        graph walked; private_dirty_bytes is the floor of what this process
+        really owns.  Their ratio is the coverage, and it is never 100%:
+        interpreter internals, C extension arenas and native buffers are simply
+        not reachable from Python object graphs.
+        """
+
+        coverage = self._last_deep_coverage or {}
+        measured = int(coverage.get("measured_bytes") or 0)
+        private_dirty = int(process.get("private_dirty_bytes") or 0)
+        coverage_percent: float | None = None
+        if private_dirty > 0 and measured > 0:
+            coverage_percent = round(measured / private_dirty * 100.0, 1)
+        self_payload = deep_results.get(self.self_plugin_name) or {}
+        return {
+            "method": "retained-graph",
+            "measured_bytes": measured,
+            "exclusive_bytes": int(coverage.get("exclusive_bytes") or 0),
+            "shared_bytes": int(coverage.get("shared_bytes") or 0),
+            "self_bytes": int(self_payload.get("total_bytes") or 0),
+            "private_dirty_bytes": private_dirty or None,
+            "footprint_bytes": int(process.get("footprint_bytes") or 0) or None,
+            "coverage_percent": coverage_percent,
+            "plugin_count": int(coverage.get("plugin_count") or 0),
+            "complete_count": int(coverage.get("complete_count") or 0),
+            "truncated_count": int(coverage.get("truncated_count") or 0),
+            "scanned_objects": int(coverage.get("scanned_objects") or 0),
+            "generated_at": deep_meta.get("generated_at"),
+            "elapsed_ms": coverage.get("elapsed_ms"),
+            "work_ms": coverage.get("work_ms"),
+            "fresh": bool(deep_meta.get("fresh")),
+        }
+
     def _record_sample(
         self,
         process: dict[str, Any],
         census: CensusResult | None,
         rows: list[dict[str, Any]],
+        retained: dict[str, dict[str, Any]] | None = None,
     ) -> list[Any]:
         rss_bytes = int(process.get("rss_bytes") or 0)
+        # Only the totals go into the history: a full per-plugin breakdown per
+        # sample would bloat the persisted payload for no extra insight.
+        retained_map = {
+            str(name): int((payload or {}).get("total_bytes") or 0)
+            for name, payload in (retained or {}).items()
+        }
         sample = Sample(
             ts=time.time(),
             rss_bytes=rss_bytes,
             census_bytes=census.plugin_bytes if census is not None else 0,
             plugins=census.plugin_map() if census is not None else {},
             census_ran=census is not None,
+            pss_bytes=int(process.get("pss_bytes") or 0),
+            swap_pss_bytes=int(process.get("swap_pss_bytes") or 0),
+            allocated_blocks=int(process.get("allocated_blocks") or 0),
+            retained=retained_map,
+            retained_ran=retained is not None,
         )
         self.history.add(sample)
         fired: list[Any] = []
@@ -626,6 +764,8 @@ class MemoryCollector:
             audit = audits.get(entry.name)
             seen = census_plugins.get(entry.name)
             census_bytes = seen.bytes if seen is not None else 0
+            retained = deep_results.get(entry.name)
+            retained_bytes = int((retained or {}).get("total_bytes") or 0)
             row: dict[str, Any] = {
                 **entry.to_dict(),
                 "is_self": (
@@ -656,10 +796,25 @@ class MemoryCollector:
                     entry.name,
                 ),
                 "retained": deep_results.get(entry.name),
+                "retained_bytes": retained_bytes or None,
+                "retained_delta_bytes": (
+                    self.history.retained_delta(entry.name, retained_bytes)
+                    if retained is not None
+                    else None
+                ),
+                "retained_trend_bytes_per_minute": (
+                    self.history.retained_trend_bytes_per_minute(entry.name)
+                ),
             }
             rows.append(row)
+        # Retained bytes first: it is the only column that is a measurement of
+        # live memory rather than of import-time cost.
         rows.sort(
-            key=lambda item: (item["import_bytes"] or 0, item["census_bytes"]),
+            key=lambda item: (
+                item["retained_bytes"] or 0,
+                item["import_bytes"] or 0,
+                item["census_bytes"],
+            ),
             reverse=True,
         )
         return rows
@@ -744,6 +899,7 @@ class MemoryCollector:
             "audit": audit.to_dict() if audit is not None else None,
             "census": seen.to_dict(top_types=12) if seen is not None else None,
             "series": self.history.series(plugin, limit=240),
+            "retained_series": self.history.retained_series(plugin, limit=240),
         }
 
     def _build_notes(
@@ -780,14 +936,38 @@ class MemoryCollector:
             notes.append("rss_reader_unavailable")
         if self._last_deep_truncated:
             notes.append("deep_scan_truncated")
+        if self.settings.proc_smaps_enabled and not self.smaps.supported:
+            notes.append("smaps_unavailable")
+        if self.settings.deep_scan_enabled and not self._deep_rounds:
+            notes.append("retained_never_run")
+        elif int((self._last_deep_coverage or {}).get("truncated_count") or 0) > 0:
+            notes.append("retained_partial")
         return notes
 
     # ------------------------------------------------------------------
+    def deep_scan_due(self) -> bool:
+        """Is this the sample that should also walk the retained graph?
+
+        The scan is spread over every Nth sample instead of every one: it is the
+        only probe with a real CPU cost, and per-plugin retained bytes move on
+        the scale of minutes, not seconds.  The very first scan runs earlier so
+        the dashboard is not empty for N intervals after a restart.
+        """
+
+        if not self.settings.deep_scan_enabled:
+            return False
+        interval = self.settings.deep_scan_interval_samples
+        if interval <= 0:
+            return False
+        threshold = interval if self._deep_rounds else min(interval, 2)
+        return self._samples_since_deep >= threshold
+
     async def sample_once(self) -> list[Any]:
         """Take one history sample and return the alerts it triggered."""
 
         self.last_alerts = []
-        await self.build_report(deep=False, record_sample=True)
+        self._samples_since_deep += 1
+        await self.build_report(deep=self.deep_scan_due(), record_sample=True)
         return list(self.last_alerts)
 
     async def census_now(self) -> dict[str, Any]:

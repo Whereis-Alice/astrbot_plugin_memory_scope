@@ -14,6 +14,7 @@ import pytest
 from core.collector import MemoryCollector, Settings
 from core.import_cost import PackageCost, PluginImportCost, reset_ledger
 from core.object_census import CensusResult, PluginCensus, TypeStat
+from core.proc_memory import SmapsRollupReader
 from core.sampler import HistoryStore
 
 PLUGIN_ID = "astrbot_plugin_memory_scope"
@@ -299,3 +300,173 @@ def test_census_result_can_be_injected_for_row_shape_regression(tmp_path):
     assert row["census_bytes"] == 4096
     assert row["census_objects"] == 4
     assert row["census_types"][0]["type"] == "fake.Type"
+
+
+REAL_ROLLUP = """Rss:              601268 kB
+Pss:              598632 kB
+Pss_Dirty:        476464 kB
+Shared_Clean:       4228 kB
+Private_Clean:    120576 kB
+Private_Dirty:    476464 kB
+Swap:             375160 kB
+SwapPss:          375160 kB
+"""
+
+
+def fake_smaps(tmp_path, text=REAL_ROLLUP):
+    """A SmapsRollupReader pointed at a file we control."""
+
+    path = tmp_path / "smaps_rollup"
+    path.write_text(text, encoding="utf-8")
+    return SmapsRollupReader(min_interval_seconds=0.0, path=str(path))
+
+
+def test_process_stats_report_the_footprint_not_just_rss(tmp_path):
+    collector = build_collector([], deep_scan_enabled=False, dep_audit_enabled=False)
+    collector.smaps = fake_smaps(tmp_path)
+
+    stats = collector.process_stats()
+
+    assert stats["pss_bytes"] == 598632 * 1024
+    assert stats["swap_pss_bytes"] == 375160 * 1024
+    assert stats["footprint_bytes"] == (598632 + 375160) * 1024
+    assert stats["private_dirty_bytes"] == 476464 * 1024
+    # The age marker travels with the numbers so the UI can admit staleness.
+    assert stats["rollup_age_seconds"] >= 0.0
+    # Exact and free; the one counter that sees a leak the allocator still hides.
+    assert stats["allocated_blocks"] > 0
+    assert stats["gc"]["allocated_blocks"] == stats["allocated_blocks"]
+
+
+def test_totals_and_notes_follow_smaps_availability(tmp_path):
+    collector = build_collector([], deep_scan_enabled=False, dep_audit_enabled=False)
+    collector.smaps = fake_smaps(tmp_path)
+
+    report = run(collector.build_report(record_sample=False))
+    totals = report["totals"]
+    assert totals["footprint_bytes"] == (598632 + 375160) * 1024
+    assert totals["pss_bytes"] == 598632 * 1024
+    assert totals["swap_pss_bytes"] == 375160 * 1024
+    assert totals["private_dirty_bytes"] == 476464 * 1024
+    assert totals["allocated_blocks"] > 0
+    assert "smaps_unavailable" not in report["notes"]
+
+    # A kernel without Pss support must say so instead of passing RSS off as a
+    # footprint.
+    blind = build_collector([], deep_scan_enabled=False, dep_audit_enabled=False)
+    blind.smaps = SmapsRollupReader(path=str(tmp_path / "absent"))
+    blind_report = run(blind.build_report(record_sample=False))
+    assert blind_report["totals"]["footprint_bytes"] == 0
+    assert "smaps_unavailable" in blind_report["notes"]
+
+
+def test_rss_only_samples_still_carry_footprint_and_blocks(tmp_path):
+    # v1.0.2 regression: when no probe ran, the sampler used to store nothing at
+    # all, leaving the trend chart permanently empty on default settings.
+    collector = build_collector([], deep_scan_enabled=False, dep_audit_enabled=False)
+    collector.smaps = fake_smaps(tmp_path)
+
+    run(collector.build_report(record_sample=True))
+
+    latest = collector.history.samples()[-1]
+    assert latest.has_attribution is False
+    assert latest.has_retained is False
+    assert latest.rss_bytes > 0
+    assert latest.footprint_bytes == (598632 + 375160) * 1024
+    assert latest.allocated_blocks > 0
+
+
+def test_attribution_block_is_honest_about_coverage(tmp_path):
+    meta, module, star = make_plugin(tmp_path, "plugin_fat", payload_size=200_000)
+    star.cache = module.CACHE
+    collector = build_collector(
+        [meta],
+        deep_scan_enabled=True,
+        dep_audit_enabled=False,
+        deep_scan_time_budget_ms=5000,
+    )
+    collector.smaps = fake_smaps(tmp_path)
+
+    report = run(collector.build_report(deep=True, record_sample=True))
+    attribution = report["attribution"]
+
+    assert set(attribution) == {
+        "method",
+        "measured_bytes",
+        "exclusive_bytes",
+        "shared_bytes",
+        "self_bytes",
+        "private_dirty_bytes",
+        "footprint_bytes",
+        "coverage_percent",
+        "plugin_count",
+        "complete_count",
+        "truncated_count",
+        "scanned_objects",
+        "generated_at",
+        "elapsed_ms",
+        "work_ms",
+        "fresh",
+    }
+    assert attribution["method"] == "retained-graph"
+    assert attribution["fresh"] is True
+    assert attribution["measured_bytes"] > 0
+    assert attribution["scanned_objects"] > 0
+    assert attribution["plugin_count"] == 1
+    # Coverage is measured against private dirty pages and can never reach 100%:
+    # interpreter internals and C extension arenas are unreachable from Python.
+    assert 0.0 < attribution["coverage_percent"] < 100.0
+
+    assert report["totals"]["retained_bytes"] > 0
+    assert (
+        report["totals"]["retained_exclusive_bytes"]
+        + report["totals"]["retained_shared_bytes"]
+        == report["totals"]["retained_bytes"]
+    )
+    assert report["history"]["retained_samples"] == 1
+    assert "retained_never_run" not in report["notes"]
+
+
+def test_retained_scan_is_scheduled_not_run_on_every_tick():
+    collector = build_collector([], deep_scan_enabled=True, deep_scan_interval_samples=5)
+
+    # The first scan comes early so the dashboard is not blank for five
+    # intervals after a restart.
+    assert collector.deep_scan_due() is False
+    collector._samples_since_deep = 2
+    assert collector.deep_scan_due() is True
+
+    # Afterwards it settles into the configured interval.
+    collector._deep_rounds = 1
+    collector._samples_since_deep = 4
+    assert collector.deep_scan_due() is False
+    collector._samples_since_deep = 5
+    assert collector.deep_scan_due() is True
+
+
+def test_retained_scan_can_be_switched_off_entirely():
+    off = build_collector([], deep_scan_enabled=False, deep_scan_interval_samples=1)
+    off._samples_since_deep = 99
+    assert off.deep_scan_due() is False
+
+    manual = build_collector(
+        [],
+        deep_scan_enabled=True,
+        deep_scan_interval_samples=0,
+    )
+    manual._samples_since_deep = 99
+    # 0 means manual-only: the button still works, the sampler never triggers it.
+    assert manual.deep_scan_due() is False
+
+
+def test_deep_request_is_ignored_when_the_scan_is_disabled(tmp_path):
+    meta, _module, _star = make_plugin(tmp_path, "plugin_quiet")
+    collector = build_collector([meta], deep_scan_enabled=False, dep_audit_enabled=False)
+
+    report = run(collector.build_report(deep=True, record_sample=False))
+
+    assert report["deep_meta"]["fresh"] is False
+    assert report["deep_meta"]["rounds"] == 0
+    assert report["attribution"]["measured_bytes"] == 0
+    assert report["attribution"]["coverage_percent"] is None
+    assert report["plugins"][0]["retained"] is None

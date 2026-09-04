@@ -183,6 +183,13 @@ class MemoryScopeWebApi:
                     "dep_audit_enabled": settings.dep_audit_enabled,
                     "deep_scan_enabled": settings.deep_scan_enabled,
                     "deep_scan_time_budget_ms": settings.deep_scan_time_budget_ms,
+                    "deep_scan_interval_samples": settings.deep_scan_interval_samples,
+                    "deep_scan_slice_ms": settings.deep_scan_slice_ms,
+                    "deep_scan_duty_percent": settings.deep_scan_duty_percent,
+                    "proc_smaps_enabled": settings.proc_smaps_enabled,
+                    "proc_smaps_min_interval_seconds": (
+                        settings.proc_smaps_min_interval_seconds
+                    ),
                     "history_size": settings.history_size,
                     "alert_plugin_mb": settings.alert_plugin_mb,
                     "alert_growth_mb_per_hour": settings.alert_growth_mb_per_hour,
@@ -194,12 +201,16 @@ class MemoryScopeWebApi:
                     "census_samples": len(
                         self.collector.history.census_samples(),
                     ),
+                    "retained_samples": len(
+                        self.collector.history.retained_samples(),
+                    ),
                     "baseline_at": (
                         self.collector.history.baseline.ts
                         if self.collector.history.baseline
                         else None
                     ),
                 },
+                "smaps": self.collector.smaps.stats(),
                 "routes": self.routes,
                 "server_time": time.time(),
             },
@@ -257,10 +268,22 @@ class MemoryScopeWebApi:
         latest = getattr(history, "latest", None)
         rss_delta_fn = getattr(history, "rss_delta", None)
         data: dict[str, Any] = {
+            # One packed array per sample instead of five parallel series: the
+            # chart draws all of them together and this keeps the payload small
+            # enough to poll every few seconds on a 2-core VPS.
+            "points": history.chart_points(limit),
             "totals": history.totals_series(limit),
             "rss": history.rss_series(limit),
+            "pss": history.pss_series(limit),
+            "blocks": history.blocks_series(limit),
+            "retained_totals": history.retained_totals_series(limit),
             "census_samples": len(history.census_samples(limit)),
+            "retained_samples": len(history.retained_samples(limit)),
             "rss_trend_bytes_per_minute": history.rss_trend_bytes_per_minute(),
+            "footprint_trend_bytes_per_minute": (
+                history.footprint_trend_bytes_per_minute()
+            ),
+            "blocks_trend_per_minute": history.blocks_trend_per_minute(),
             "baseline_at": history.baseline.ts if history.baseline else None,
             "baseline_rss_bytes": (
                 history.baseline.rss_bytes if history.baseline else None
@@ -272,17 +295,32 @@ class MemoryScopeWebApi:
             ),
             "interval_seconds": self.collector.settings.sample_interval_seconds,
         }
+        coverage = getattr(self.collector, "_last_deep_coverage", None)
+        data["coverage"] = coverage
         if plugin:
             data["plugin"] = plugin
             data["series"] = history.series(plugin, limit)
+            data["retained_series"] = history.retained_series(plugin, limit)
             data["trend_bytes_per_minute"] = history.trend_bytes_per_minute(plugin)
+            data["retained_trend_bytes_per_minute"] = (
+                history.retained_trend_bytes_per_minute(plugin)
+            )
         else:
             samples = history.samples(limit)
             names: set[str] = set()
+            retained_names: set[str] = set()
             for sample in samples:
                 names.update(sample.plugins.keys())
+                retained_names.update(getattr(sample, "retained", {}).keys())
             data["series_by_plugin"] = {
                 name: history.series(name, limit) for name in sorted(names)
+            }
+            # The table sparkline needs a per-plugin series even when the object
+            # census is switched off, which is the default.  Retained samples
+            # are already in memory, so this costs one dict walk per plugin.
+            data["retained_series_by_plugin"] = {
+                name: history.retained_series(name, limit)
+                for name in sorted(retained_names)
             }
         return ok(data)
 

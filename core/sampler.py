@@ -8,7 +8,11 @@ from dataclasses import dataclass, field
 from typing import Any, Iterable
 
 BYTES_PER_MB = 1024 * 1024
-PAYLOAD_VERSION = 2
+PAYLOAD_VERSION = 3
+#: Payloads at or above this version store object-census bytes in the plugin
+#: slots.  Version 1 stored tracemalloc numbers there, which are a different
+#: quantity entirely, so only RSS is salvaged from those.
+ATTRIBUTION_MIN_VERSION = 2
 PROCESS_KEY = "__process__"
 
 
@@ -16,9 +20,9 @@ PROCESS_KEY = "__process__"
 class Sample:
     """One tick of the background loop.
 
-    ``rss_bytes`` is always present because reading it costs microseconds.  The
-    per-plugin numbers come from the object census, which is opt-in, so most
-    samples are RSS-only.
+    rss_bytes is always present because reading it costs microseconds.  The
+    per-plugin numbers come from the object census and the retained-graph scan,
+    both of which are far more expensive, so most samples carry neither.
     """
 
     ts: float
@@ -29,16 +33,28 @@ class Sample:
     # explicit marker so that an empty result is not confused with an RSS-only
     # sample (and so it can still be used as a valid baseline).
     census_ran: bool = False
+    #: Proportional set size from smaps_rollup: shared pages divided by their
+    #: number of sharers.  0 when the kernel does not expose it.
+    pss_bytes: int = 0
+    #: Same accounting for pages the kernel swapped out.  RSS forgets these.
+    swap_pss_bytes: int = 0
+    #: sys.getallocatedblocks(); a cheap, exact leak signal that needs no probe.
+    allocated_blocks: int = 0
+    #: Per-plugin retained bytes from the reference-graph scan.
+    retained: dict[str, int] = field(default_factory=dict)
+    retained_ran: bool = False
 
     def __post_init__(self) -> None:
         # Preserve the intuitive behaviour for callers constructing a Sample
         # directly: non-empty census fields imply that a census was performed.
-        # The collector passes ``census_ran=True`` for the valid empty result.
+        # The collector passes census_ran=True for the valid empty result.
         if not self.census_ran and (self.census_bytes > 0 or self.plugins):
             self.census_ran = True
+        if not self.retained_ran and self.retained:
+            self.retained_ran = True
 
     @property
-    def has_attribution(self) -> bool:
+    def has_census(self) -> bool:
         """Whether an object census ran for this sample.
 
         RSS-only samples must never be mixed into per-plugin series: a missing
@@ -47,6 +63,32 @@ class Sample:
 
         return self.census_ran or self.census_bytes > 0 or bool(self.plugins)
 
+    @property
+    def has_attribution(self) -> bool:
+        """Backwards-compatible alias for has_census."""
+
+        return self.has_census
+
+    @property
+    def has_retained(self) -> bool:
+        return self.retained_ran or bool(self.retained)
+
+    @property
+    def footprint_bytes(self) -> int:
+        """Pss + SwapPss, or 0 when the kernel did not report Pss.
+
+        Zero rather than a fallback to RSS on purpose: mixing the two would
+        produce a series with an invisible step in the middle of it.
+        """
+
+        if self.pss_bytes <= 0:
+            return 0
+        return self.pss_bytes + self.swap_pss_bytes
+
+    @property
+    def retained_total_bytes(self) -> int:
+        return sum(self.retained.values()) if self.retained else 0
+
     def to_payload(self) -> list[Any]:
         return [
             round(self.ts, 3),
@@ -54,6 +96,11 @@ class Sample:
             self.census_bytes,
             self.plugins,
             self.census_ran,
+            self.pss_bytes,
+            self.swap_pss_bytes,
+            self.allocated_blocks,
+            self.retained,
+            self.retained_ran,
         ]
 
     @classmethod
@@ -71,12 +118,20 @@ class Sample:
                 if len(payload) >= 5
                 else int(payload[2]) > 0 or bool(plugins)
             )
+            retained = (
+                payload[8] if len(payload) >= 9 and isinstance(payload[8], dict) else {}
+            )
             return cls(
                 ts=float(payload[0]),
                 rss_bytes=int(payload[1]),
                 census_bytes=int(payload[2]),
                 plugins={str(k): int(v) for k, v in plugins.items()},
                 census_ran=census_ran,
+                pss_bytes=int(payload[5]) if len(payload) >= 6 else 0,
+                swap_pss_bytes=int(payload[6]) if len(payload) >= 7 else 0,
+                allocated_blocks=int(payload[7]) if len(payload) >= 8 else 0,
+                retained={str(k): int(v) for k, v in retained.items()},
+                retained_ran=bool(payload[9]) if len(payload) >= 10 else bool(retained),
             )
         except (TypeError, ValueError):
             return None
@@ -124,9 +179,17 @@ class HistoryStore:
         return items
 
     def census_samples(self, limit: int | None = None) -> list[Sample]:
-        """Samples that carry per-plugin numbers, newest last."""
+        """Samples that carry per-plugin census numbers, newest last."""
 
         items = [sample for sample in self._samples if sample.has_attribution]
+        if limit and limit > 0:
+            items = items[-limit:]
+        return items
+
+    def retained_samples(self, limit: int | None = None) -> list[Sample]:
+        """Samples that carry per-plugin retained numbers, newest last."""
+
+        items = [sample for sample in self._samples if sample.has_retained]
         if limit and limit > 0:
             items = items[-limit:]
         return items
@@ -137,12 +200,66 @@ class HistoryStore:
             for sample in self.census_samples(limit)
         ]
 
+    def retained_series(
+        self,
+        plugin: str,
+        limit: int | None = None,
+    ) -> list[list[float]]:
+        return [
+            [round(sample.ts, 3), int(sample.retained.get(plugin, 0))]
+            for sample in self.retained_samples(limit)
+        ]
+
     def rss_series(self, limit: int | None = None) -> list[list[float]]:
-        return [[round(sample.ts, 3), sample.rss_bytes] for sample in self.samples(limit)]
+        return [
+            [round(sample.ts, 3), sample.rss_bytes] for sample in self.samples(limit)
+        ]
+
+    def pss_series(self, limit: int | None = None) -> list[list[float]]:
+        """Footprint series; entries with no kernel Pss report 0."""
+
+        return [
+            [round(sample.ts, 3), sample.pss_bytes, sample.swap_pss_bytes]
+            for sample in self.samples(limit)
+        ]
+
+    def blocks_series(self, limit: int | None = None) -> list[list[float]]:
+        return [
+            [round(sample.ts, 3), sample.allocated_blocks]
+            for sample in self.samples(limit)
+        ]
+
+    def retained_totals_series(self, limit: int | None = None) -> list[list[float]]:
+        return [
+            [round(sample.ts, 3), sample.retained_total_bytes]
+            for sample in self.retained_samples(limit)
+        ]
 
     def totals_series(self, limit: int | None = None) -> list[list[float]]:
         return [
             [round(sample.ts, 3), sample.rss_bytes, sample.census_bytes]
+            for sample in self.samples(limit)
+        ]
+
+    def chart_points(self, limit: int | None = None) -> list[list[float]]:
+        """Everything the trend chart needs, in one pass.
+
+        Layout: [ts, rss, pss, swap_pss, allocated_blocks, retained_total,
+        census_bytes].  Retained and census totals are 0 on samples where the
+        corresponding probe did not run -- the chart draws those as gaps rather
+        than as a drop to zero.
+        """
+
+        return [
+            [
+                round(sample.ts, 3),
+                sample.rss_bytes,
+                sample.pss_bytes,
+                sample.swap_pss_bytes,
+                sample.allocated_blocks,
+                sample.retained_total_bytes,
+                sample.census_bytes,
+            ]
             for sample in self.samples(limit)
         ]
 
@@ -152,6 +269,11 @@ class HistoryStore:
             # so any difference against it would be pure noise.
             return None
         return current_bytes - int(self._baseline.plugins.get(plugin, 0))
+
+    def retained_delta(self, plugin: str, current_bytes: int) -> int | None:
+        if self._baseline is None or not self._baseline.has_retained:
+            return None
+        return current_bytes - int(self._baseline.retained.get(plugin, 0))
 
     def rss_delta(self, current_bytes: int) -> int | None:
         if self._baseline is None:
@@ -168,11 +290,52 @@ class HistoryStore:
             ],
         )
 
+    def retained_trend_bytes_per_minute(
+        self,
+        plugin: str,
+        window: int = 20,
+    ) -> float | None:
+        """Slope of the retained series; the trend the overview leans on."""
+
+        return _slope(
+            [
+                (sample.ts, float(sample.retained.get(plugin, 0)))
+                for sample in self.retained_samples(window)
+            ],
+        )
+
     def rss_trend_bytes_per_minute(self, window: int = 20) -> float | None:
         """Process RSS slope; the one trend that works with everything off."""
 
         return _slope(
             [(sample.ts, float(sample.rss_bytes)) for sample in self.samples(window)],
+        )
+
+    def footprint_trend_bytes_per_minute(self, window: int = 20) -> float | None:
+        """Pss + SwapPss slope, ignoring samples taken without kernel support."""
+
+        return _slope(
+            [
+                (sample.ts, float(sample.footprint_bytes))
+                for sample in self.samples(window)
+                if sample.footprint_bytes > 0
+            ],
+        )
+
+    def blocks_trend_per_minute(self, window: int = 20) -> float | None:
+        """Allocated-block slope.
+
+        Rising blocks with flat RSS means a leak the allocator is still
+        absorbing into arenas it already owns -- the one signal that catches a
+        leak before it shows up as memory growth.
+        """
+
+        return _slope(
+            [
+                (sample.ts, float(sample.allocated_blocks))
+                for sample in self.samples(window)
+                if sample.allocated_blocks > 0
+            ],
         )
 
     # ------------------------------------------------------------------
@@ -190,7 +353,10 @@ class HistoryStore:
             version = int(payload.get("version") or 1)
         except (TypeError, ValueError):
             version = 1
-        attribution = version >= PAYLOAD_VERSION
+        # Compares against ATTRIBUTION_MIN_VERSION, not PAYLOAD_VERSION:
+        # bumping the payload format must not throw away per-plugin history
+        # that is still measured the same way.
+        attribution = version >= ATTRIBUTION_MIN_VERSION
         for raw in payload.get("samples") or []:
             sample = Sample.from_payload(raw, attribution=attribution)
             if sample is not None:

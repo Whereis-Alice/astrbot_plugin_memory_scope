@@ -25,16 +25,39 @@ class StubHistory:
         self.calls.append(("census_samples", limit))
         return [SimpleNamespace(ts=1), SimpleNamespace(ts=2)]
 
+    def retained_samples(self, limit=None):
+        self.calls.append(("retained_samples", limit))
+        return [SimpleNamespace(ts=2)]
+
     def samples(self, limit=None):
         self.calls.append(("samples", limit))
         return [
-            SimpleNamespace(ts=1.0, plugins={"b": 10}),
-            SimpleNamespace(ts=2.0, plugins={"a": 20}),
+            SimpleNamespace(ts=1.0, plugins={"b": 10}, retained={}),
+            SimpleNamespace(ts=2.0, plugins={"a": 20}, retained={"a": 60}),
+        ]
+
+    def chart_points(self, limit):
+        self.calls.append(("chart_points", limit))
+        return [
+            [1.0, 100, 90, 5, 1000, 0, 0],
+            [2.0, 110, 95, 6, 1010, 60, 20],
         ]
 
     def totals_series(self, limit):
         self.calls.append(("totals_series", limit))
         return [[1.0, 100, 20], [2.0, 110, 20]]
+
+    def pss_series(self, limit):
+        self.calls.append(("pss_series", limit))
+        return [[1.0, 90, 5], [2.0, 95, 6]]
+
+    def blocks_series(self, limit):
+        self.calls.append(("blocks_series", limit))
+        return [[1.0, 1000], [2.0, 1010]]
+
+    def retained_totals_series(self, limit):
+        self.calls.append(("retained_totals_series", limit))
+        return [[2.0, 60]]
 
     def rss_series(self, limit):
         self.calls.append(("rss_series", limit))
@@ -44,13 +67,29 @@ class StubHistory:
         self.calls.append(("series", plugin, limit))
         return [[2.0, 20]]
 
+    def retained_series(self, plugin, limit):
+        self.calls.append(("retained_series", plugin, limit))
+        return [[2.0, 60]]
+
     def trend_bytes_per_minute(self, plugin):
         self.calls.append(("trend", plugin))
         return 1234.0
 
+    def retained_trend_bytes_per_minute(self, plugin):
+        self.calls.append(("retained_trend", plugin))
+        return 99.0
+
     def rss_trend_bytes_per_minute(self):
         self.calls.append(("rss_trend",))
         return 5678.0
+
+    def footprint_trend_bytes_per_minute(self):
+        self.calls.append(("footprint_trend",))
+        return 4321.0
+
+    def blocks_trend_per_minute(self):
+        self.calls.append(("blocks_trend",))
+        return 12.0
 
     def set_baseline(self):
         self.calls.append("set_baseline")
@@ -80,6 +119,18 @@ class StubAlerts:
         ]
 
 
+class StubSmaps:
+    def stats(self):
+        return {
+            "supported": True,
+            "reads": 2,
+            "failures": 0,
+            "elapsed_ms": 5.4,
+            "min_interval_seconds": 30.0,
+            "generated_at": 100.0,
+        }
+
+
 class StubRegistry:
     def __init__(self, known=None, discovered=None):
         self.known = set(known or {"a_plugin"})
@@ -94,6 +145,7 @@ class StubCollector:
         self.settings = Settings.from_config({})
         self.history = StubHistory()
         self.alerts = StubAlerts()
+        self.smaps = StubSmaps()
         self.registry = StubRegistry(known, discovered)
         self.report_calls: list[dict[str, Any]] = []
         self.ensure_calls: list[bool] = []
@@ -226,7 +278,22 @@ def test_overview_contains_process_settings_and_history(api):
     payload = data_of(run(instance.get_overview()))
     assert payload["process"]["pid"] == 4242
     assert payload["settings"]["measure_import_cost"] is True
-    assert payload["history"] == {"samples": 3, "census_samples": 2, "baseline_at": None}
+    # The v3 probes are configurable from the dashboard, so their knobs have to
+    # travel with the overview payload.
+    assert payload["settings"]["proc_smaps_enabled"] is True
+    assert payload["settings"]["proc_smaps_min_interval_seconds"] == 30.0
+    assert payload["settings"]["deep_scan_interval_samples"] == 5
+    assert payload["settings"]["deep_scan_slice_ms"] == 15
+    assert payload["settings"]["deep_scan_duty_percent"] == 25
+    assert payload["history"] == {
+        "samples": 3,
+        "census_samples": 2,
+        "retained_samples": 1,
+        "baseline_at": None,
+    }
+    # smaps stats let the UI say "footprint unavailable" instead of guessing.
+    assert payload["smaps"]["supported"] is True
+    assert payload["smaps"]["elapsed_ms"] == 5.4
     assert payload["routes"] == instance.routes
     assert payload["server_time"] > 0
 
@@ -272,15 +339,34 @@ def test_history_supports_process_and_plugin_series(api):
     collector = StubCollector()
     instance = api(collector, FakeRequest(args={"limit": "10"}))
     payload = data_of(run(instance.get_history()))
+    # points is the packed row the chart reads: ts, rss, pss, swap_pss, blocks,
+    # retained total, census bytes.
+    assert payload["points"] == [
+        [1.0, 100, 90, 5, 1000, 0, 0],
+        [2.0, 110, 95, 6, 1010, 60, 20],
+    ]
     assert payload["totals"] == [[1.0, 100, 20], [2.0, 110, 20]]
     assert payload["rss"] == [[1.0, 100], [2.0, 110]]
+    assert payload["pss"] == [[1.0, 90, 5], [2.0, 95, 6]]
+    assert payload["blocks"] == [[1.0, 1000], [2.0, 1010]]
+    assert payload["retained_totals"] == [[2.0, 60]]
+    assert payload["census_samples"] == 2
+    assert payload["retained_samples"] == 1
     assert payload["rss_trend_bytes_per_minute"] == 5678.0
+    assert payload["footprint_trend_bytes_per_minute"] == 4321.0
+    assert payload["blocks_trend_per_minute"] == 12.0
     assert set(payload["series_by_plugin"]) == {"a", "b"}
+    # Sparklines need a retained series even with the census switched off, which
+    # is the default.  Only plugins that appear in a retained sample get one.
+    assert payload["retained_series_by_plugin"] == {"a": [[2.0, 60]]}
 
     one = api(collector, FakeRequest(args={"plugin": "a", "limit": "5"}))
     one_payload = data_of(run(one.get_history()))
     assert one_payload["series"] == [[2.0, 20]]
+    assert one_payload["retained_series"] == [[2.0, 60]]
     assert one_payload["trend_bytes_per_minute"] == 1234.0
+    assert one_payload["retained_trend_bytes_per_minute"] == 99.0
+    assert "series_by_plugin" not in one_payload
 
 
 def test_alerts_limit_is_clamped_and_serialized(api):

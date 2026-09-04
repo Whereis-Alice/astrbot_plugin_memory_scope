@@ -39,7 +39,7 @@ from .core.text_report import (
 from .core.web_api import MemoryScopeWebApi
 
 PLUGIN_ID = "astrbot_plugin_memory_scope"
-PLUGIN_VERSION = "2.0.1"
+PLUGIN_VERSION = "3.0.0"
 # Key used with the plugin KV store so history survives a reload.
 HISTORY_KEY = "history"
 # Flush the ring buffer to the KV store every N samples instead of every sample.
@@ -244,6 +244,8 @@ class MemoryScopePlugin(Star):
         )
 
     async def _sample_tick(self) -> None:
+        # The retained-graph scan rides along on every Nth tick; the collector
+        # owns that schedule so the chat commands and the WebUI share it.
         for alert in await self.collector.sample_once():
             # sample_once returns only the alerts that passed the cooldown.
             logger.warning("MemoryScope 告警: %s", alert.message)
@@ -308,9 +310,19 @@ class MemoryScopePlugin(Star):
         yield event.plain_result("正在扫描引用图，可能需要几秒…")
         report = await self.collector.build_report(deep=True, record_sample=True)
         meta = report.get("deep_meta") or {}
+        attribution = report.get("attribution") or {}
         text = render_overview(report, top_n=self._top_n(count))
-        suffix = f"\n\n深度扫描耗时 {meta.get('elapsed_ms') or 0} ms"
-        if meta.get("truncated"):
+        suffix = f"\n\n引用图扫描耗时 {meta.get('elapsed_ms') or 0} ms"
+        work_ms = attribution.get("work_ms")
+        if work_ms:
+            suffix += f"（其中实际遍历 {work_ms} ms）"
+        percent = attribution.get("coverage_percent")
+        if percent is not None:
+            suffix += f"，归因覆盖 Private_Dirty 的 {percent}%"
+        truncated = int(attribution.get("truncated_count") or 0)
+        if truncated:
+            suffix += f"；{truncated} 个插件本轮未扫完，下一轮会轮到它们"
+        elif meta.get("truncated"):
             suffix += "（已达上限被截断，结果偏小）"
         yield event.plain_result(text + suffix)
 

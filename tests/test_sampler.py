@@ -23,7 +23,21 @@ def test_rss_only_sample_is_not_plugin_attribution():
     item = Sample(ts=1.0, rss_bytes=200 * BYTES_PER_MB)
 
     assert item.has_attribution is False
-    assert item.to_payload() == [1.0, 200 * BYTES_PER_MB, 0, {}, False]
+    assert item.has_retained is False
+    assert item.footprint_bytes == 0
+    assert item.retained_total_bytes == 0
+    assert item.to_payload() == [
+        1.0,
+        200 * BYTES_PER_MB,
+        0,
+        {},
+        False,
+        0,
+        0,
+        0,
+        {},
+        False,
+    ]
 
 
 def test_sample_payload_roundtrip_and_type_normalization():
@@ -134,7 +148,7 @@ def test_payload_roundtrip_and_old_v1_payload_is_rss_only():
     history.set_baseline()
 
     payload = history.to_payload(keep=10)
-    assert payload["version"] == 2
+    assert payload["version"] == 3
 
     restored = HistoryStore()
     restored.load_payload(payload)
@@ -155,6 +169,138 @@ def test_payload_roundtrip_and_old_v1_payload_is_rss_only():
     assert migrated.latest.has_attribution is False
     assert migrated.baseline is not None
     assert migrated.baseline.has_attribution is False
+
+
+def probe(
+    ts: float,
+    *,
+    rss: int = 100 * BYTES_PER_MB,
+    pss: int = 0,
+    swap: int = 0,
+    blocks: int = 0,
+    retained: dict | None = None,
+) -> Sample:
+    """A sample as the v3 collector builds it: cheap fields plus optional probes."""
+
+    return Sample(
+        ts=ts,
+        rss_bytes=rss,
+        pss_bytes=pss,
+        swap_pss_bytes=swap,
+        allocated_blocks=blocks,
+        retained=dict(retained or {}),
+    )
+
+
+def test_footprint_counts_the_pages_rss_forgot_in_swap():
+    resident = 601 * BYTES_PER_MB
+    swapped = 366 * BYTES_PER_MB
+    item = probe(1.0, rss=resident, pss=resident, swap=swapped)
+
+    # This is the whole point of reading smaps_rollup: RSS says 601 MB while the
+    # process is really costing the box 967 MB.
+    assert item.footprint_bytes == resident + swapped
+    # Without kernel Pss the answer is 0, never a silent fallback to RSS -- a
+    # fallback would put an invisible step in the middle of the series.
+    assert probe(2.0, rss=resident).footprint_bytes == 0
+
+
+def test_retained_history_is_kept_apart_from_census_history():
+    history = HistoryStore()
+    history.add(sample(1.0, 2048))  # census only
+    history.add(probe(2.0, retained={"demo": 4096, "other": 1024}))  # retained only
+    history.add(probe(3.0))  # neither
+
+    assert len(history.census_samples()) == 1
+    assert len(history.retained_samples()) == 1
+    # A plugin missing from a retained sample reads 0; samples that never ran the
+    # scan are dropped instead, so the series cannot invent a fake recovery.
+    assert history.retained_series("demo") == [[2.0, 4096]]
+    assert history.retained_series("ghost") == [[2.0, 0]]
+    assert history.retained_totals_series() == [[2.0, 5120]]
+
+
+def test_chart_points_pack_every_series_into_one_row_per_sample():
+    history = HistoryStore()
+    history.add(probe(1.0, rss=200, pss=190, swap=10, blocks=5000))
+    history.add(probe(2.0, rss=210, pss=195, swap=12, blocks=5100, retained={"demo": 64}))
+    history.add(sample(3.0, 4096, rss=220))
+
+    points = history.chart_points()
+    assert points == [
+        [1.0, 200, 190, 10, 5000, 0, 0],
+        [2.0, 210, 195, 12, 5100, 64, 0],
+        [3.0, 220 + 4096, 0, 0, 0, 0, 4096],
+    ]
+    # Seven columns, ts first: the chart reads them positionally.
+    assert all(len(row) == 7 for row in points)
+
+
+def test_footprint_and_block_trends_skip_samples_without_the_probe():
+    history = HistoryStore()
+    for index in range(5):
+        history.add(
+            probe(
+                index * 60.0,
+                pss=index * BYTES_PER_MB,
+                blocks=10_000 + index * 1000,
+            ),
+        )
+    # Kernel without Pss support in the middle of the window: skipped, not
+    # treated as a drop to zero.
+    history.add(probe(300.0, rss=999))
+
+    footprint = history.footprint_trend_bytes_per_minute()
+    assert footprint is not None
+    assert abs(footprint - BYTES_PER_MB) < 1024
+
+    blocks = history.blocks_trend_per_minute()
+    assert blocks is not None
+    assert abs(blocks - 1000.0) < 1.0
+
+
+def test_retained_trend_and_delta_need_a_retained_baseline():
+    history = HistoryStore()
+    for index in range(4):
+        history.add(probe(index * 60.0, retained={"demo": index * 1024}))
+
+    trend = history.retained_trend_bytes_per_minute("demo")
+    assert trend is not None
+    assert abs(trend - 1024.0) < 1.0
+
+    # An RSS-only baseline carries no per-plugin numbers to subtract.
+    history.set_baseline(probe(500.0))
+    assert history.retained_delta("demo", 9999) is None
+
+    history.set_baseline(probe(600.0, retained={"demo": 1024}))
+    assert history.retained_delta("demo", 4096) == 3072
+    assert history.retained_delta("ghost", 512) == 512
+
+
+def test_v3_payload_keeps_footprint_blocks_and_retained():
+    history = HistoryStore()
+    history.add(probe(9.0, rss=300, pss=280, swap=20, blocks=7777, retained={"demo": 64}))
+    history.set_baseline()
+
+    restored = HistoryStore()
+    restored.load_payload(history.to_payload(keep=10))
+    latest = restored.latest
+    assert latest is not None
+    assert (latest.pss_bytes, latest.swap_pss_bytes) == (280, 20)
+    assert latest.footprint_bytes == 300
+    assert latest.allocated_blocks == 7777
+    assert latest.retained == {"demo": 64}
+    assert latest.has_retained is True
+
+    # v2 payloads stop at census_ran; the retained fields simply come back empty
+    # rather than poisoning the series with zeros.
+    old = {"version": 2, "samples": [[3.0, 500, 400, {"demo": 128}, True]]}
+    migrated = HistoryStore()
+    migrated.load_payload(old)
+    assert migrated.latest is not None
+    assert migrated.latest.has_attribution is True
+    assert migrated.latest.has_retained is False
+    assert migrated.latest.footprint_bytes == 0
 
 
 def test_history_ignores_malformed_payloads():

@@ -118,6 +118,48 @@ def test_render_overview_mentions_rss_import_and_census():
     assert "Big Plugin" in text
     assert "趋势" in text
 
+def test_render_overview_leads_with_footprint_when_smaps_available():
+    data = report()
+    data["process"]["footprint_bytes"] = 973 * MB
+    data["process"]["pss_bytes"] = 598 * MB
+    data["process"]["swap_pss_bytes"] = 375 * MB
+    data["totals"]["retained_bytes"] = 5 * MB
+    data["totals"]["retained_exclusive_bytes"] = 4 * MB
+    data["totals"]["retained_shared_bytes"] = MB
+    data["attribution"] = {
+        "method": "retained-graph",
+        "measured_bytes": 5 * MB,
+        "private_dirty_bytes": 100 * MB,
+        "coverage_percent": 5.0,
+    }
+
+    text = render_overview(data, top_n=2)
+    head = text.splitlines()[1]
+
+    assert "真实足迹" in head
+    assert "973.0 MB" in head
+    # RSS stays visible next to it so the paged-out gap is not hidden.
+    assert "RSS 512.0 MB" in head
+    assert "已换出 375.0 MB" in head
+    assert "引用图归因" in text
+    assert "独占 4.0 MB" in text
+    assert "共享均摊 1.0 MB" in text
+    assert "覆盖 Private_Dirty 的 5.0%" in text
+
+
+def test_render_overview_falls_back_to_rss_without_smaps():
+    data = report()
+    data["notes"] = ["smaps_unavailable", "retained_never_run"]
+
+    text = render_overview(data, top_n=2)
+    head = text.splitlines()[1]
+
+    # No Pss means no footprint claim at all - never silently reuse RSS.
+    assert head.startswith("进程 RSS 512.0 MB")
+    assert "真实足迹" not in text
+    assert "内核未提供 smaps_rollup" in text
+    assert "引用图归因尚未跑过第一轮" in text
+
 
 def test_render_imports_and_audit_are_explicit_about_shared_costs():
     imports = render_imports(report(), top_n=5)
