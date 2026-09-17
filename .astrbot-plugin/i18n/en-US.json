@@ -8,9 +8,9 @@
       "brand.sub": "MEMORY OBSERVATORY",
       "language": "Language",
       "theme": "Theme",
-      "theme.paper": "Sand",
-      "theme.midnight": "Ocean",
-      "theme.plum": "Dusk",
+      "theme.paper": "Parchment",
+      "theme.midnight": "Polar Night",
+      "theme.plum": "Afterglow",
       "export": "Export report",
       "connecting": "Connecting",
       "auth.title": "Connect to the observer",
@@ -272,7 +272,12 @@
       "检测到差异，请结合波动与环境判断": "Difference observed; assess variability and environment",
       "匿名驻留": "Resident anonymous",
       "文件缓存": "File cache",
-      "title": "Memory Observatory"
+      "title": "Memory Observatory",
+      "theme.choose": "Appearance",
+      "theme.paper.desc": "Warm ivory / forest / terracotta",
+      "theme.midnight.desc": "Deep ink / ice blue / amber",
+      "theme.plum.desc": "Night plum / apricot / iris",
+      "theme.hint": "Applies instantly. Your choice is saved."
     }
   }
 }

@@ -137,7 +137,8 @@ def test_report_navigation_and_mobile_layout(preview, width, height):
             assert page.locator("#chart-reset").is_visible()
             page.locator("#chart-reset").click()
         for theme in ("paper", "midnight", "plum"):
-            page.locator("#theme").select_option(theme)
+            page.locator("#theme").click()
+            page.locator(f'[data-theme-choice="{theme}"]').click()
             snapshot(page, f"overview-{theme}-{width}")
         page.locator('[data-go="plugins"]').first.click()
         page.get_by_role("button", name="示例图片插件", exact=True).click()
@@ -396,4 +397,100 @@ def test_view_models_keep_zero_negative_unknown_and_escape_untrusted_names(previ
         assert result["order"] == ["zero", "negative", "unknown"]
         assert "<img" not in result["escaped"]
         assert result["failed"] and result["plain"] == {"plugins": [1]}
+        browser.close()
+
+
+@pytest.mark.parametrize("width,height", [(1440, 1000), (390, 844), (320, 740)])
+def test_theme_menu_keyboard_readability_and_persistence(preview, width, height):
+    """The theme control stays readable and usable independently of OS select colours."""
+    import re
+
+    url, _, _ = preview
+    with playwright.sync_playwright() as pw:
+        browser = pw.chromium.launch(headless=True)
+        page = browser.new_page(viewport={"width": width, "height": height})
+        page.goto(url)
+        trigger = page.locator("#theme")
+        trigger.focus()
+        page.keyboard.press("ArrowDown")
+        menu = page.get_by_role("menu")
+        assert menu.is_visible()
+        assert page.locator('[data-theme-choice="paper"]').evaluate(
+            "e=>e===document.activeElement"
+        )
+        page.keyboard.press("End")
+        page.keyboard.press("Enter")
+        assert menu.is_hidden()
+        assert trigger.evaluate("e=>e===document.activeElement")
+        assert page.locator("html").get_attribute("data-scope-theme") == "plum"
+        page.reload()
+        assert page.locator("html").get_attribute("data-scope-theme") == "plum"
+        for theme in ("paper", "midnight", "plum"):
+            trigger.click()
+            page.locator(f'[data-theme-choice="{theme}"]').click()
+            trigger.click()
+            assert page.get_by_role("menuitemradio", checked=True).count() == 1
+            bounds = menu.bounding_box()
+            assert 0 <= bounds["x"] and bounds["x"] + bounds["width"] <= width
+            assert bounds["y"] + bounds["height"] <= height
+            assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+            # Check text on both ends of card gradients and all semantic badges.
+            colours = page.evaluate("""() => {
+                const el = document.createElement('span'); document.body.append(el);
+                const result = {};
+                for (const key of ['ink','body','muted','surface','soft','accent','accent-soft',
+                  'data','data-soft','secondary','secondary-soft','violet','violet-soft',
+                  'good','good-soft','warn','warn-soft','bad','bad-soft','on-accent']) {
+                    el.style.color = `var(--${key})`; result[key] = getComputedStyle(el).color;
+                }
+                el.remove(); return result;
+            }""")
+
+            def luminance(key, colours=colours):
+                rgb = [int(v) / 255 for v in re.findall(r"[0-9]+", colours[key])[:3]]
+                linear = [
+                    v / 12.92 if v <= 0.04045 else ((v + 0.055) / 1.055) ** 2.4
+                    for v in rgb
+                ]
+                return sum(v * w for v, w in zip(linear, [0.2126, 0.7152, 0.0722]))
+
+            pairs = [
+                (fg, bg)
+                for fg in ("ink", "body", "muted")
+                for bg in ("surface", "soft")
+            ]
+            pairs += [
+                (fg, bg)
+                for fg in (
+                    "accent",
+                    "data",
+                    "secondary",
+                    "violet",
+                    "good",
+                    "warn",
+                    "bad",
+                )
+                for bg in ("surface", fg + "-soft")
+            ]
+            pairs += [("on-accent", "accent")]
+            for fg, bg in pairs:
+                light, dark = sorted((luminance(fg), luminance(bg)), reverse=True)
+                assert (light + 0.05) / (dark + 0.05) >= 4.5, (theme, fg, bg)
+            # Escape, Tab, and an outside click all dismiss the menu without a trap.
+            page.keyboard.press("Escape")
+            assert menu.is_hidden()
+            assert trigger.evaluate("e=>e===document.activeElement")
+            trigger.click()
+            page.keyboard.press("Tab")
+            assert menu.is_hidden()
+            assert not page.locator("#theme-picker").evaluate(
+                "e=>e.contains(document.activeElement)"
+            )
+            trigger.click()
+            page.locator(".brand").click()
+            assert menu.is_hidden()
+        page.locator("#locale").select_option("en-US")
+        trigger.click()
+        assert "Afterglow" in menu.inner_text()
+        assert not re.search(r"[\u4e00-\u9fff]", menu.inner_text())
         browser.close()

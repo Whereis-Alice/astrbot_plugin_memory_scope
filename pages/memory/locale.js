@@ -13,16 +13,16 @@ export const messages = {
     "Theme"
   ],
   "theme.paper": [
-    "砂白",
-    "Sand"
+    "松纸",
+    "Parchment"
   ],
   "theme.midnight": [
-    "深海",
-    "Ocean"
+    "极夜",
+    "Polar Night"
   ],
   "theme.plum": [
-    "暮紫",
-    "Dusk"
+    "暮映",
+    "Afterglow"
   ],
   "export": [
     "导出报告",
@@ -1071,6 +1071,26 @@ export const messages = {
   "title": [
     "内存观察台",
     "Memory Observatory"
+  ],
+  "theme.choose": [
+    "选择外观",
+    "Appearance"
+  ],
+  "theme.paper.desc": [
+    "暖纸 · 墨绿 · 陶朱",
+    "Warm ivory / forest / terracotta"
+  ],
+  "theme.midnight.desc": [
+    "深墨 · 冰蓝 · 琥珀",
+    "Deep ink / ice blue / amber"
+  ],
+  "theme.plum.desc": [
+    "夜紫 · 杏金 · 鸢尾",
+    "Night plum / apricot / iris"
+  ],
+  "theme.hint": [
+    "选择即应用，自动记住你的偏好。",
+    "Applies instantly. Your choice is saved."
   ]
 };
 let locale = "zh-CN";

@@ -93,7 +93,7 @@ const metric = (
     unit === "bytes"
       ? sizeParts(value)
       : [finite(value) ? value.toLocaleString() : "—", unit];
-  return `<article class="card metric"><div class="metric-label">${esc(label)}${icon(symbol)}</div><div class="metric-value">${esc(parts[0])}<span class="unit">${esc(parts[1])}</span></div><div class="metric-note">${esc(description)}</div></article>`;
+  return `<article class="card metric" data-signal="${symbol}"><div class="metric-label">${esc(label)}${icon(symbol)}</div><div class="metric-value">${esc(parts[0])}<span class="unit">${esc(parts[1])}</span></div><div class="metric-note">${esc(description)}</div></article>`;
 };
 const rows = () => pluginRows(S.overview || {}, S.report, S.local);
 const phaseName = (name) =>
@@ -150,6 +150,31 @@ function theme(value) {
   if (!["paper", "midnight", "plum"].includes(value)) value = "paper";
   document.documentElement.dataset.scopeTheme = value;
   $("theme").value = value;
+  paintTheme();
+}
+function paintTheme() {
+  const value = document.documentElement.dataset.scopeTheme;
+  $("theme-name").textContent = t("theme." + value);
+  $("theme").setAttribute(
+    "aria-label",
+    `${t("theme")}: ${t("theme." + value)}`,
+  );
+  document.querySelectorAll("[data-theme-choice]").forEach((option) => {
+    option.setAttribute(
+      "aria-checked",
+      String(option.dataset.themeChoice === value),
+    );
+  });
+}
+function closeTheme(restoreFocus = false) {
+  $("theme-menu").hidden = true;
+  $("theme").setAttribute("aria-expanded", "false");
+  if (restoreFocus) $("theme").focus();
+}
+function openTheme() {
+  $("theme-menu").hidden = false;
+  $("theme").setAttribute("aria-expanded", "true");
+  $("theme-menu").querySelector('[aria-checked="true"]').focus();
 }
 function toast(message) {
   clearTimeout(toastTimer);
@@ -160,6 +185,7 @@ function toast(message) {
   }, 5000);
 }
 function paintStatic() {
+  paintTheme();
   document.querySelectorAll("[data-t]").forEach((el) => {
     el.textContent = t(el.dataset.t);
   });
@@ -731,7 +757,7 @@ function renderDiagnostics(build) {
     ],
   ];
   $("content").innerHTML =
-    `${!embedded ? `<div class="notice">${t("独立页面无法访问进程内对象。请在 AstrBot 的 MemoryScope 插件页执行诊断。")}</div>` : ""}<div class="diagnostic-grid">${tools.map(([id, label, desc, sym]) => `<section class="card tool-card"><div class="tool-icon">${icon(sym)}</div><h2>${t(label)}</h2><p>${t(desc)}</p><span class="tool-status">${S.local[id === "audit" ? "audit_meta" : id === "census" ? "census_meta" : "deep_meta"]?.generated_at ? stamp(S.local[id === "audit" ? "audit_meta" : id === "census" ? "census_meta" : "deep_meta"].generated_at, true) : t("按需执行")}</span><button data-scan="${id}" ${!embedded || S.scanBusy ? "disabled" : ""}>${t("运行一次")}</button></section>`).join("")}</div><section class="card">${cardHead(t("诊断结果"), t("这里的对象估算不能与启动增量或 RSS 相加。"))}<div id="diagnostic-results"></div></section><div class="two-col section-gap"><section class="card">${cardHead(t("本地告警记录"), t("连接后端时不持续运行本地扫描，这不是服务器告警流。"))}<div class="card-body">${S.alerts.length ? S.alerts.map((a) => `<div class="job"><small>${stamp(a.ts, true)}</small><p>${esc(a.message)}</p></div>`).join("") : empty(t("暂无本地告警"))}</div></section><section class="card">${cardHead(t("进程维护"), t("GC 不保证降低 RSS；仅在排查问题时按需使用。"))}<div class="card-body"><button data-scan="gc" ${!embedded || S.scanBusy ? "disabled" : ""}>${t("运行垃圾回收")}</button>${note(t("导出报告可以保存当前证据，文件不包含连接凭据。"))}<button data-export class="quiet">${t("export")}</button></div></section></div>`;
+    `${!embedded ? `<div class="notice">${t("独立页面无法访问进程内对象。请在 AstrBot 的 MemoryScope 插件页执行诊断。")}</div>` : ""}<div class="diagnostic-grid">${tools.map(([id, label, desc, sym]) => `<section class="card tool-card" data-tool="${id}"><div class="tool-icon">${icon(sym)}</div><h2>${t(label)}</h2><p>${t(desc)}</p><span class="tool-status">${S.local[id === "audit" ? "audit_meta" : id === "census" ? "census_meta" : "deep_meta"]?.generated_at ? stamp(S.local[id === "audit" ? "audit_meta" : id === "census" ? "census_meta" : "deep_meta"].generated_at, true) : t("按需执行")}</span><button data-scan="${id}" ${!embedded || S.scanBusy ? "disabled" : ""}>${t("运行一次")}</button></section>`).join("")}</div><section class="card">${cardHead(t("诊断结果"), t("这里的对象估算不能与启动增量或 RSS 相加。"))}<div id="diagnostic-results"></div></section><div class="two-col section-gap"><section class="card">${cardHead(t("本地告警记录"), t("连接后端时不持续运行本地扫描，这不是服务器告警流。"))}<div class="card-body">${S.alerts.length ? S.alerts.map((a) => `<div class="job"><small>${stamp(a.ts, true)}</small><p>${esc(a.message)}</p></div>`).join("") : empty(t("暂无本地告警"))}</div></section><section class="card">${cardHead(t("进程维护"), t("GC 不保证降低 RSS；仅在排查问题时按需使用。"))}<div class="card-body"><button data-scan="gc" ${!embedded || S.scanBusy ? "disabled" : ""}>${t("运行垃圾回收")}</button>${note(t("导出报告可以保存当前证据，文件不包含连接凭据。"))}<button data-export class="quiet">${t("export")}</button></div></section></div>`;
   renderDiagnosticResult();
 }
 function renderDiagnosticResult() {
@@ -1054,10 +1080,48 @@ document.addEventListener("keydown", (e) => {
     }
   }
 });
-$("theme").onchange = (e) => {
-  theme(e.target.value);
-  save("theme", e.target.value);
+$("theme").onclick = () => {
+  if ($("theme-menu").hidden) openTheme();
+  else closeTheme(true);
 };
+$("theme-picker").addEventListener("keydown", (e) => {
+  const items = [...$("theme-menu").querySelectorAll("[data-theme-choice]")];
+  if (e.key === "Escape" && !$("theme-menu").hidden) {
+    e.preventDefault();
+    closeTheme(true);
+  } else if (["ArrowDown", "ArrowUp", "Home", "End"].includes(e.key)) {
+    e.preventDefault();
+    if ($("theme-menu").hidden) {
+      openTheme();
+      return;
+    }
+    const index = items.indexOf(document.activeElement);
+    const next =
+      e.key === "Home"
+        ? 0
+        : e.key === "End"
+          ? items.length - 1
+          : (index + (e.key === "ArrowDown" ? 1 : -1) + items.length) %
+            items.length;
+    items[next].focus();
+  } else if (e.key === "Tab" && !$("theme-menu").hidden) {
+    // Return to the trigger so normal tab order continues outside the menu.
+    closeTheme(true);
+  }
+});
+$("theme-menu").addEventListener("click", (e) => {
+  const choice = e.target.closest("[data-theme-choice]");
+  if (!choice) return;
+  theme(choice.dataset.themeChoice);
+  save("theme", choice.dataset.themeChoice);
+  closeTheme(true);
+});
+document.addEventListener("pointerdown", (e) => {
+  if (!$("theme-picker").contains(e.target)) closeTheme();
+});
+$("theme-picker").addEventListener("focusout", (e) => {
+  if (!$("theme-picker").contains(e.relatedTarget)) closeTheme();
+});
 $("locale").onchange = (e) => {
   setLocale(e.target.value);
   save("locale", e.target.value);

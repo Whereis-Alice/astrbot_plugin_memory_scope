@@ -1,10 +1,13 @@
 import { esc, finite, size, stamp, trendStats } from "./model.js";
 import { t } from "./locale.js";
 
+let chartSequence = 0;
+
 // SVG uses actual pixel dimensions, so text never shrinks with the desktop viewBox.
 export class TrendChart {
   constructor(root, onSummary) {
     this.root = root;
+    this.fillId = `scope-trend-fill-${++chartSequence}`;
     this.onSummary = onSummary;
     this.points = [];
     this.key = "current";
@@ -90,7 +93,7 @@ export class TrendChart {
               `${i ? "L" : "M"}${x(p.ts).toFixed(2)},${y(p.memory[this.key]).toFixed(2)}`,
           )
           .join(" ");
-        return `<path class="chart-area" d="${path} L${x(s.at(-1).ts)},${bottom} L${x(s[0].ts)},${bottom} Z"/><path class="chart-line" d="${path}"/>`;
+        return `<path class="chart-area" fill="url(#${this.fillId})" d="${path} L${x(s.at(-1).ts)},${bottom} L${x(s[0].ts)},${bottom} Z"/><path class="chart-line" d="${path}"/>`;
       })
       .join("");
     const grids = Array.from({ length: 5 }, (_, i) => {
@@ -103,7 +106,7 @@ export class TrendChart {
       const ts = ts0 + ((ts1 - ts0) * i) / (tickCount - 1);
       return `<text class="chart-axis" x="${x(ts)}" y="${h - 12}" text-anchor="${i === 0 ? "start" : i === tickCount - 1 ? "end" : "middle"}">${esc(ts1 - ts0 < 300 ? stamp(ts) : stamp(ts).slice(0, 5))}</text>`;
     }).join("");
-    this.root.innerHTML = `<svg viewBox="0 0 ${w} ${h}" role="img" aria-label="${esc(t("内存趋势，左右方向键查看采样点，拖动放大，Escape 复位。"))}" tabindex="0"><title>${esc(t("内存趋势"))} · ${size(stats.min)} — ${size(stats.max)}</title><text class="chart-axis" x="${left}" y="15">${unitName} · ${esc(this.zero ? t("从零开始") : t("自适应刻度"))}</text>${grids}${paths}${ticks}<circle class="chart-marker" r="4" cx="${x(valid.at(-1).ts)}" cy="${y(valid.at(-1).memory[this.key])}"/><rect class="chart-selection" x="0" y="${top}" width="0" height="${bottom - top}"/><g class="cursor" visibility="hidden"><line class="chart-cross" y1="${top}" y2="${bottom}"/><circle class="chart-marker" r="5"/></g></svg><div class="chart-tip" hidden role="status"></div>`;
+    this.root.innerHTML = `<svg viewBox="0 0 ${w} ${h}" role="img" aria-label="${esc(t("内存趋势，左右方向键查看采样点，拖动放大，Escape 复位。"))}" tabindex="0"><defs><linearGradient id="${this.fillId}" x1="0" y1="0" x2="0" y2="1"><stop class="chart-stop" offset="0" stop-opacity=".22"/><stop class="chart-stop" offset="1" stop-opacity=".015"/></linearGradient></defs><title>${esc(t("内存趋势"))} · ${size(stats.min)} — ${size(stats.max)}</title><text class="chart-axis" x="${left}" y="15">${unitName} · ${esc(this.zero ? t("从零开始") : t("自适应刻度"))}</text>${grids}${paths}${ticks}<circle class="chart-marker" r="4" cx="${x(valid.at(-1).ts)}" cy="${y(valid.at(-1).memory[this.key])}"/><rect class="chart-selection" x="0" y="${top}" width="0" height="${bottom - top}"/><g class="cursor" visibility="hidden"><line class="chart-cross" y1="${top}" y2="${bottom}"/><circle class="chart-marker" r="5"/></g></svg><div class="chart-tip" hidden role="status"></div>`;
     const svg = this.root.querySelector("svg"),
       cursor = svg.querySelector(".cursor"),
       line = cursor.querySelector("line"),

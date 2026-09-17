@@ -8,9 +8,9 @@
       "brand.sub": "内存观察台",
       "language": "语言",
       "theme": "主题",
-      "theme.paper": "砂白",
-      "theme.midnight": "深海",
-      "theme.plum": "暮紫",
+      "theme.paper": "松纸",
+      "theme.midnight": "极夜",
+      "theme.plum": "暮映",
       "export": "导出报告",
       "connecting": "连接中",
       "auth.title": "连接观察后端",
@@ -272,7 +272,12 @@
       "检测到差异，请结合波动与环境判断": "检测到差异，请结合波动与环境判断",
       "匿名驻留": "匿名驻留",
       "文件缓存": "文件缓存",
-      "title": "内存观察台"
+      "title": "内存观察台",
+      "theme.choose": "选择外观",
+      "theme.paper.desc": "暖纸 · 墨绿 · 陶朱",
+      "theme.midnight.desc": "深墨 · 冰蓝 · 琥珀",
+      "theme.plum.desc": "夜紫 · 杏金 · 鸢尾",
+      "theme.hint": "选择即应用，自动记住你的偏好。"
     }
   }
 }
