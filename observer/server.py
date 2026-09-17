@@ -57,8 +57,11 @@ def make_server(observer, assets: Path | None = None):
             if not url.path.startswith("/api/"):
                 mapping = {
                     "/": ("observer.html", "text/html; charset=utf-8"),
-                    "/observer.js": ("observer.js", "text/javascript; charset=utf-8"),
-                    "/observer.css": ("observer.css", "text/css; charset=utf-8"),
+                    "/app.js": ("app.js", "text/javascript; charset=utf-8"),
+                    "/chart.js": ("chart.js", "text/javascript; charset=utf-8"),
+                    "/model.js": ("model.js", "text/javascript; charset=utf-8"),
+                    "/locale.js": ("locale.js", "text/javascript; charset=utf-8"),
+                    "/style.css": ("style.css", "text/css; charset=utf-8"),
                 }
                 if url.path not in mapping:
                     return self.send(404, {"error": "Not found"})
@@ -79,9 +82,11 @@ def make_server(observer, assets: Path | None = None):
                     run_id = query.get(
                         "id", [(observer.current_run or {}).get("id", "")]
                     )[0]
-                    result = observer.report(run_id)
+                    result = observer.report(
+                        run_id, include_samples=query.get("samples", ["1"])[0] != "0"
+                    )
                     # Bound chart traffic without discarding peaks (min/max per bucket).
-                    points = result["samples"]
+                    points = result.get("samples", [])
                     if len(points) > 1500:
                         step = max(2, len(points) // 750)
                         selected = []
@@ -96,8 +101,16 @@ def make_server(observer, assets: Path | None = None):
                         result["samples"] = selected
                     result["samples"] = [
                         {k: s[k] for k in ("ts", "memory", "state") if k in s}
-                        for s in result["samples"]
+                        for s in result.get("samples", [])
                     ]
+                elif url.path == "/api/trend":
+                    run_id = query.get(
+                        "id", [(observer.current_run or {}).get("id", "")]
+                    )[0]
+                    seconds = int(query.get("seconds", ["3600"])[0])
+                    if seconds not in {0, 900, 3600, 21600, 86400}:
+                        raise ValueError("Unsupported time range")
+                    result = observer.trend(run_id, seconds)
                 elif url.path == "/api/compare":
                     groups = {
                         label: [

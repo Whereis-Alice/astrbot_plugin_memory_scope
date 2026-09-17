@@ -1,2068 +1,1150 @@
-// MemoryScope dashboard page: dependency-free, no build step, no bundler.
-// The page never instruments Python allocations.  It only renders counters that
-// the backend already collected: /proc probes, import-window accounting, and
-// explicitly requested object/reference scans.
-//
-// Style note: this file deliberately avoids template literals so it stays easy
-// to patch with plain text tooling.  String concatenation only.
-
-const bridge = window.AstrBotPluginPage;
-
-const STORE_SKIN = "memoryscope.skin";
-const STORE_AUTO = "memoryscope.auto";
-const STORE_TAB = "memoryscope.tab";
-const STORE_SORT = "memoryscope.sort";
-
-const TABS = ["observer", "overview", "plugins", "imports", "audit", "census", "alerts", "help"];
-const SKINS = [
-  { id: "auto", label: "跟随 Dashboard" },
-  { id: "dark", label: "深色" },
-  { id: "light", label: "浅色" },
-];
-const SKIN_IDS = SKINS.map((item) => item.id);
-const AUTO_INTERVALS = [0, 10, 30, 60, 300];
-const ALERT_LIMIT = 40;
-const KB = 1024;
-const MB = 1024 * 1024;
-const SVG_NS = "http://www.w3.org/2000/svg";
-const TREND = { w: 840, h: 300, padX: 42, padY: 34 };
-
-const reduceMotion = (function () {
-  try {
-    return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-  } catch (_error) {
-    return false;
-  }
-})();
-
-const COLUMNS = [
-  { key: "name", i18n: "col.plugin", fallback: "插件" },
-  { key: "import", i18n: "col.import", fallback: "导入成本" },
-  { key: "census", i18n: "col.census", fallback: "对象普查" },
-  { key: "objects", i18n: "col.objects", fallback: "对象数" },
-  { key: "retained", i18n: "col.retained", fallback: "引用图保留" },
-  { key: "trend", i18n: "col.trend", fallback: "增长趋势" },
-  { key: "chart", i18n: "col.chart", fallback: "近期曲线", sortable: false },
-];
-const SORT_KEYS = COLUMNS.filter((item) => item.sortable !== false).map((item) => item.key);
-
-const NOTE_FALLBACK = {
-  import_hook_not_installed: "导入成本钩子没有留下有效记录；重启后会在更早阶段安装。",
-  import_hook_degraded: "导入成本钩子已自动降级，导入账本可能不完整。",
-  partial_import_coverage: "部分插件在本插件安装钩子之前已加载，导入成本显示为未知。",
-  census_never_run: "对象普查尚未运行；需要时在“对象普查”页手动执行。",
-  census_sampled: "对象普查使用抽样，结果是估算值，适合比较比例。",
-  census_truncated: "对象普查达到时间上限，结果偏小。",
-  dep_audit_never_run: "依赖审计尚未运行。",
-  dep_audit_truncated: "依赖审计达到时间上限，部分源码未扫描。",
-  psutil_missing: "没有 psutil，部分进程级指标不可用。",
-  rss_reader_unavailable: "无法读取进程 RSS。",
-  deep_scan_truncated: "引用图扫描达到上限，保留量是下界。",
-  smaps_unavailable: "内核没有提供 smaps_rollup，只能显示 RSS，看不到共享页与换出页的真实足迹。",
-  retained_never_run: "引用图保留量尚未扫描；点“引用图扫描”或等后台轮转采样。",
-  retained_partial: "引用图扫描按轮转配额切片，本轮只覆盖了部分插件，覆盖率会逐轮补齐。",
-};
-
-const state = {
+import {
+  esc,
+  finite,
+  unwrap,
+  size,
+  sizeParts,
+  signedSize,
+  stamp,
+  duration,
+  pluginRows,
+  sortedRows,
+} from "./model.js";
+import { TrendChart } from "./chart.js";
+import { t, setLocale } from "./locale.js";
+const $ = (id) => document.getElementById(id);
+const embedded = document.body.dataset.mode === "embedded";
+const S = {
   tab: "overview",
-  skin: "auto",
-  auto: 0,
-  autoTimer: null,
-  report: null,
+  mode: null,
+  token: "",
   overview: null,
-  history: null,
+  report: {},
+  trend: { samples: [] },
+  runs: [],
+  jobs: [],
+  local: {},
   alerts: [],
-  alertsEnabled: false,
+  range: 3600,
+  metric: "current",
+  zero: false,
   search: "",
-  sortKey: "retained",
-  sortDir: "desc",
+  filter: "all",
+  sort: "delta",
+  page: 0,
+  runId: "",
+  historyReport: null,
+  phase: "all",
+  phaseSearch: "",
+  phasePage: 0,
+  errors: [],
   busy: false,
-  action: null,
-  drawerName: null,
-  drawerPayload: null,
-  toastTimer: null,
+  queued: false,
+  scanBusy: false,
 };
-
-const el = (id) => document.getElementById(id);
-
-function t(key, fallback) {
+let bridge,
+  chart,
+  timer,
+  toastTimer,
+  drawerFocus,
+  localLoaded = false,
+  viewBuilt = "";
+const navs = [
+  ["overview", "总览", "overview"],
+  ["plugins", "插件", "plugins"],
+  ["startup", "启动记录", "activity"],
+  ["diagnostics", "诊断", "scan"],
+  ["experiments", "对照", "compare"],
+  ["guide", "说明", "help"],
+];
+const paths = {
+  overview:
+    '<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>',
+  plugins:
+    '<rect x="5" y="5" width="14" height="14" rx="3"/><path d="M9 2v3m6-3v3M9 19v3m6-3v3M2 9h3m-3 6h3m14-6h3m-3 6h3"/>',
+  activity: '<path d="M2 13h5l3-9 4 16 3-7h5"/>',
+  scan: '<path d="M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5M7 12h10m-5-5v10"/>',
+  compare: '<path d="M7 3v18M17 3v18M3 7h8m2 10h8M4 4l3 3 3-3m4 16 3-3 3 3"/>',
+  help: '<circle cx="12" cy="12" r="9"/><path d="M9 9a3 3 0 1 1 5 2c-2 1-2 2-2 3m0 3h.01"/>',
+  server:
+    '<rect x="3" y="3" width="18" height="7" rx="2"/><rect x="3" y="14" width="18" height="7" rx="2"/><path d="M7 6.5h.01M7 17.5h.01M11 6.5h6m-6 11h6"/>',
+  clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+  box: '<path d="m12 3 9 5v9l-9 5-9-5V8zM3 8l9 5 9-5m-9 5v9"/>',
+};
+const icon = (name) =>
+  `<svg class="icon" viewBox="0 0 24 24" aria-hidden="true">${paths[name] || paths.box}</svg>`;
+const tag = (label, kind = "") =>
+  `<span class="tag ${kind}">${esc(label)}</span>`;
+const rawDetails = (data) =>
+  `<details><summary>${t("查看原始证据")}</summary><pre>${esc(JSON.stringify(data, null, 2))}</pre></details>`;
+const empty = (title, description = "", action = "") =>
+  `<div class="empty">${icon("scan")}<h2>${esc(title)}</h2><p>${esc(description)}</p>${action}</div>`;
+const note = (text) => `<p class="data-note">${esc(text)}</p>`;
+const cardHead = (title, sub = "", extra = "") =>
+  `<div class="card-head"><div><h2>${esc(title)}</h2>${sub ? `<small>${esc(sub)}</small>` : ""}</div>${extra}</div>`;
+const metric = (
+  label,
+  value,
+  description,
+  unit = "bytes",
+  symbol = "activity",
+) => {
+  const parts =
+    unit === "bytes"
+      ? sizeParts(value)
+      : [finite(value) ? value.toLocaleString() : "—", unit];
+  return `<article class="card metric"><div class="metric-label">${esc(label)}${icon(symbol)}</div><div class="metric-value">${esc(parts[0])}<span class="unit">${esc(parts[1])}</span></div><div class="metric-note">${esc(description)}</div></article>`;
+};
+const rows = () => pluginRows(S.overview || {}, S.report, S.local);
+const phaseName = (name) =>
+  t(
+    {
+      import: "导入",
+      construct: "构造",
+      initialize: "初始化",
+      startup_window: "日志窗口",
+    }[name] || name,
+  );
+const statusName = (state) =>
+  t(
+    {
+      running: "运行中",
+      starting: "启动中",
+      stopped: "已停止",
+      unavailable: "不可用",
+      complete: "已完成",
+      queued: "排队中",
+      restoring: "恢复中",
+      cancelled: "已取消",
+      failed: "失败",
+      interrupted: "已中断",
+    }[state] ||
+      state ||
+      "未知",
+  );
+const preferences = {};
+let preferenceSave = Promise.resolve();
+function saved(key, fallback) {
+  if (preferences[key]) return preferences[key];
   try {
-    const value = bridge && typeof bridge.t === "function"
-      ? bridge.t("pages.memory." + key, fallback)
-      : fallback;
-    return value === undefined || value === null || value === "" ? fallback : value;
-  } catch (_error) {
+    return localStorage.getItem("memoryscope." + key) || fallback;
+  } catch {
     return fallback;
   }
 }
-
-function esc(value) {
-  return String(value === undefined || value === null ? "" : value)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
-
-function num(value) {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : null;
-}
-
-function known(value) {
-  return value !== null && value !== undefined && num(value) !== null;
-}
-
-function positive(value) {
-  const parsed = num(value);
-  return parsed !== null && parsed > 0 ? parsed : null;
-}
-
-function fmtBytes(value, missing) {
-  if (missing === undefined) missing = "—";
-  const parsed = num(value);
-  if (parsed === null) return missing;
-  const units = ["B", "KB", "MB", "GB", "TB"];
-  let size = Math.abs(parsed);
-  let unit = 0;
-  while (size >= 1024 && unit < units.length - 1) {
-    size /= 1024;
-    unit += 1;
-  }
-  const digits = unit === 0 ? 0 : size >= 100 ? 0 : size >= 10 ? 1 : 2;
-  const valueText = size.toFixed(digits).replace(/\.0+$/, "");
-  return (parsed < 0 ? "−" : "") + valueText + " " + units[unit];
-}
-
-function splitBytes(value) {
-  // Same scaling as fmtBytes but the unit is returned separately so the hero
-  // headline can render it in a smaller weight.
-  const parsed = num(value);
-  if (parsed === null) return { value: "—", unit: "" };
-  const units = ["B", "KB", "MB", "GB", "TB"];
-  let size = Math.abs(parsed);
-  let unit = 0;
-  while (size >= 1024 && unit < units.length - 1) {
-    size /= 1024;
-    unit += 1;
-  }
-  const digits = unit === 0 ? 0 : size >= 100 ? 0 : size >= 10 ? 1 : 2;
-  return {
-    value: (parsed < 0 ? "−" : "") + size.toFixed(digits).replace(/\.0+$/, ""),
-    unit: units[unit],
-  };
-}
-
-function fmtSigned(value, missing) {
-  if (missing === undefined) missing = "—";
-  const parsed = num(value);
-  if (parsed === null) return missing;
-  if (Math.abs(parsed) < KB) return "≈0";
-  return (parsed > 0 ? "+" : "−") + fmtBytes(Math.abs(parsed));
-}
-
-function fmtRate(bytesPerMinute, missing) {
-  if (missing === undefined) missing = "—";
-  const parsed = num(bytesPerMinute);
-  if (parsed === null) return missing;
-  const perHour = parsed * 60;
-  if (Math.abs(perHour) < 64 * KB) return "≈0";
-  return (perHour > 0 ? "+" : "−") + fmtBytes(Math.abs(perHour)) + t("unit.perHour", "/小时");
-}
-
-function fmtCount(value, missing) {
-  if (missing === undefined) missing = "—";
-  const parsed = num(value);
-  if (parsed === null) return missing;
-  try {
-    return Math.round(parsed).toLocaleString();
-  } catch (_error) {
-    return String(Math.round(parsed));
-  }
-}
-
-function fmtPercent(value, digits, missing) {
-  if (digits === undefined) digits = 1;
-  if (missing === undefined) missing = "—";
-  const parsed = num(value);
-  return parsed === null ? missing : parsed.toFixed(digits) + "%";
-}
-
-function fmtMs(value, missing) {
-  if (missing === undefined) missing = "—";
-  const parsed = num(value);
-  if (parsed === null) return missing;
-  return parsed >= 1000 ? (parsed / 1000).toFixed(2) + " s" : Math.round(parsed) + " ms";
-}
-
-function fmtTime(value, missing) {
-  if (missing === undefined) missing = "—";
-  const parsed = num(value);
-  if (parsed === null || parsed <= 0) return missing;
-  try {
-    return new Date(parsed * 1000).toLocaleString();
-  } catch (_error) {
-    return missing;
-  }
-}
-
-function fmtClock(value, missing) {
-  if (missing === undefined) missing = "—";
-  const parsed = num(value);
-  if (parsed === null || parsed <= 0) return missing;
-  try {
-    return new Date(parsed * 1000).toLocaleTimeString();
-  } catch (_error) {
-    return missing;
-  }
-}
-
-function fmtDuration(value, missing) {
-  if (missing === undefined) missing = "—";
-  const seconds = num(value);
-  if (seconds === null || seconds < 0) return missing;
-  const total = Math.floor(seconds);
-  const days = Math.floor(total / 86400);
-  const hours = Math.floor((total % 86400) / 3600);
-  const minutes = Math.floor((total % 3600) / 60);
-  const pad = (part) => String(part).padStart(2, "0");
-  const clock = pad(hours) + ":" + pad(minutes) + ":" + pad(total % 60);
-  return days ? days + "d " + clock : clock;
-}
-
-function truncate(value, max) {
-  if (max === undefined) max = 80;
-  const text = String(value === undefined || value === null ? "" : value);
-  return text.length <= max ? text : text.slice(0, Math.max(1, max - 1)) + "…";
-}
-
-function readStore(key, fallback) {
-  // Plugin Pages are sandboxed and must not depend on Dashboard storage.
-  // Preferences intentionally live only for the lifetime of this iframe.
-  void key;
-  return fallback;
-}
-
-function writeStore(key, value) {
-  void key;
-  void value;
-}
-
-function toast(message, kind) {
-  const node = el("toast");
-  if (!node) return;
-  node.textContent = String(message);
-  node.dataset.kind = kind === "error" ? "error" : "ok";
-  node.hidden = false;
-  if (state.toastTimer) window.clearTimeout(state.toastTimer);
-  state.toastTimer = window.setTimeout(function () { node.hidden = true; }, kind === "error" ? 7000 : 2800);
-}
-
-function errorText(error) {
-  if (!error) return t("error.request", "请求失败");
-  if (typeof error === "string") return error;
-  return error.message || String(error);
-}
-
-function unwrap(result) {
-  if (result && typeof result === "object" && result.status === "error") {
-    throw new Error(result.message || t("error.request", "请求失败"));
-  }
-  if (result && typeof result === "object" && result.status === "ok" && "data" in result) {
-    return result.data;
-  }
-  return result;
-}
-
-async function apiGet(endpoint, params) {
-  if (!bridge || typeof bridge.apiGet !== "function") throw new Error(t("error.bridge", "页面桥接不可用"));
-  return unwrap(await bridge.apiGet(endpoint, params || {}));
-}
-
-async function apiPost(endpoint, body) {
-  if (!bridge || typeof bridge.apiPost !== "function") throw new Error(t("error.bridge", "页面桥接不可用"));
-  return unwrap(await bridge.apiPost(endpoint, body || {}));
-}
-
-function isDarkContext() {
-  try {
-    const context = bridge && typeof bridge.getContext === "function" ? bridge.getContext() : null;
-    if (context && typeof context.isDark === "boolean") return context.isDark;
-  } catch (_error) {
-    // Fall back to the browser preference.
+function save(key, value) {
+  preferences[key] = value;
+  if (embedded && bridge) {
+    const snapshot = { ...preferences };
+    preferenceSave = preferenceSave
+      .then(() => api("preferences", snapshot, "POST", true))
+      .catch((e) => toast(e.message));
   }
   try {
-    return window.matchMedia("(prefers-color-scheme: dark)").matches;
-  } catch (_error) {
-    return true;
+    localStorage.setItem("memoryscope." + key, value);
+  } catch {
+    /* Storage can be denied in embedded contexts. */
   }
 }
-
-function applySkin() {
-  const effective = state.skin === "auto" ? (isDarkContext() ? "dark" : "light") : state.skin;
-  document.documentElement.dataset.skin = effective;
-  document.documentElement.dataset.theme = effective;
-  const select = el("skin-select");
-  if (select && select.value !== state.skin) select.value = state.skin;
+function theme(value) {
+  if (!["paper", "midnight", "plum"].includes(value)) value = "paper";
+  document.documentElement.dataset.scopeTheme = value;
+  $("theme").value = value;
 }
-
-function buildSelects() {
-  const skin = el("skin-select");
-  if (skin) {
-    skin.innerHTML = SKINS.map(function (item) {
-      return '<option value="' + esc(item.id) + '">' + esc(t("skin." + item.id, item.label)) + "</option>";
-    }).join("");
-    skin.value = state.skin;
-  }
-  const auto = el("auto-select");
-  if (auto) {
-    auto.innerHTML = AUTO_INTERVALS.map(function (seconds) {
-      const label = seconds === 0 ? t("auto.off", "关闭") : seconds + "s";
-      return '<option value="' + seconds + '">' + esc(label) + "</option>";
-    }).join("");
-    auto.value = String(state.auto);
-  }
+function toast(message) {
+  clearTimeout(toastTimer);
+  $("toast").textContent = message;
+  $("toast").hidden = false;
+  toastTimer = setTimeout(() => {
+    $("toast").hidden = true;
+  }, 5000);
 }
-
-function applyStaticText() {
-  for (const node of document.querySelectorAll("[data-i18n]")) {
-    if (node.dataset.i18nDefault === undefined) node.dataset.i18nDefault = node.textContent || "";
-    node.textContent = t(node.dataset.i18n, node.dataset.i18nDefault);
-  }
-  const search = el("search");
-  if (search) search.placeholder = t("table.search", "搜索插件名…");
-  document.title = t("title", "MemoryScope 内存观察");
-  const title = el("page-title");
-  if (title) title.textContent = t("title", "MemoryScope 内存观察");
-  const desc = el("page-desc");
-  if (desc) desc.textContent = t("desc", "用轻量探针观察进程足迹、插件导入成本与引用图保留量");
-  const autoLabel = el("auto-label");
-  if (autoLabel) autoLabel.textContent = t("auto.label", "自动刷新");
-  const skinLabel = el("skin-label");
-  if (skinLabel) skinLabel.textContent = t("skin.label", "主题");
-  buildSelects();
-}
-
-function setTab(name) {
-  state.tab = TABS.includes(name) ? name : "overview";
-  writeStore(STORE_TAB, state.tab);
-  for (const button of document.querySelectorAll(".nav-btn")) {
-    const active = button.dataset.tab === state.tab;
-    button.classList.toggle("is-active", active);
-    button.setAttribute("aria-selected", active ? "true" : "false");
-  }
-  for (const panel of document.querySelectorAll(".panel")) {
-    panel.classList.toggle("is-active", panel.id === "panel-" + state.tab);
-  }
-  if (state.tab === "observer") window.dispatchEvent(new Event("memoryscope:observer"));
-}
-
-function setAction(action) {
-  state.action = action;
-  state.busy = Boolean(action);
-  for (const button of document.querySelectorAll("button")) {
-    if (button.closest("#observer-root")) continue;
-    if (button.id === "drawer-close") continue;
-    if (button.classList.contains("nav-btn")) continue;
-    button.disabled = Boolean(action) && button.id !== "btn-refresh";
-  }
-  const refresh = el("btn-refresh");
-  if (refresh) refresh.disabled = Boolean(action) && action !== "refresh";
-}
-
-/* ---------------------------------------------------------------- builders */
-
-function statusRow(label, value, detail, level) {
-  return '<div class="status-row" data-level="' + esc(level || "neutral") + '">'
-    + '<div class="status-main"><span class="status-dot"></span><span>' + esc(label) + "</span></div>"
-    + "<strong>" + esc(value) + "</strong>"
-    + "<small>" + esc(detail || "") + "</small>"
-    + "</div>";
-}
-
-function kv(label, value) {
-  return '<div class="kv-row"><span>' + esc(label) + "</span><strong>" + esc(value) + "</strong></div>";
-}
-
-function pill(label, level) {
-  return '<span class="pill' + (level ? " " + esc(level) : "") + '">' + esc(label) + "</span>";
-}
-
-function heroStat(label, value) {
-  return '<div class="hero-stat"><span>' + esc(label) + "</span><strong>" + esc(value) + "</strong></div>";
-}
-
-function reportProcess() {
-  return (state.report && state.report.process) || (state.overview && state.overview.process) || {};
-}
-
-function reportTotals() {
-  return (state.report && state.report.totals) || {};
-}
-
-function reportHistory() {
-  return (state.report && state.report.history) || (state.overview && state.overview.history) || {};
-}
-
-function reportAttribution() {
-  return (state.report && state.report.attribution) || {};
-}
-
-function censusReady() {
-  return Boolean(state.report && state.report.census_meta);
-}
-
-function footprintBytes(process) {
-  // Preferred accuracy order: smaps_rollup footprint (Pss + SwapPss) > Pss
-  // alone > plain RSS.  Anything below the first option undercounts a process
-  // that has been partially swapped out, which is the normal state on a 1.6 GB
-  // VPS with zram.
-  const source = process || reportProcess();
-  return positive(source.footprint_bytes)
-    || positive(source.pss_bytes)
-    || positive(source.rss_bytes);
-}
-
-function footprintLabel(process) {
-  const source = process || reportProcess();
-  if (positive(source.footprint_bytes)) return t("hero.sourceFootprint", "Pss + SwapPss（真实足迹）");
-  if (positive(source.pss_bytes)) return t("hero.sourcePss", "Pss（按共享页均摊）");
-  return t("hero.sourceRss", "RSS（内核没提供 smaps_rollup）");
-}
-
-/* ------------------------------------------------------------- sparklines */
-
-function sparkValues(series) {
-  // Accepts either a flat number array or the [[ts, value], ...] shape the
-  // history endpoint returns.  Zero means "probe did not run at this sample",
-  // so it is treated as a gap rather than a real drop to zero.
-  const out = [];
-  for (const item of series || []) {
-    const value = Array.isArray(item) ? num(item[1]) : num(item);
-    if (value === null || value <= 0) continue;
-    out.push(value);
-  }
-  return out;
-}
-
-function sparkline(series, tone) {
-  const values = sparkValues(series);
-  if (values.length < 2) return '<span class="spark-empty">—</span>';
-  const w = 120;
-  const h = 40;
-  const padX = 2;
-  const padY = 5;
-  const maxV = Math.max.apply(null, values);
-  const minV = Math.min.apply(null, values);
-  const floor = maxV === minV ? Math.max(0, minV - 1) : minV - (maxV - minV) * 0.3;
-  const span = Math.max(1, maxV - floor);
-  const line = smoothLinePath(values.map(function (v) { return v - floor; }), w, h, padX, padY, span, 0.4);
-  if (!line) return '<span class="spark-empty">—</span>';
-  const base = h - padY;
-  const area = line + " L " + (w - padX) + " " + base + " L " + padX + " " + base + " Z";
-  const style = tone ? ' style="--tone:' + tone + '"' : "";
-  return '<svg class="spark" viewBox="0 0 ' + w + " " + h + '" preserveAspectRatio="none" aria-hidden="true"' + style + ">"
-    + '<path class="spark-area" d="' + area + '" />'
-    + '<path class="spark-path" vector-effect="non-scaling-stroke" d="' + line + '" />'
-    + "</svg>";
-}
-
-/* ------------------------------------------------------------------- hero */
-
-function renderHero() {
-  const process = reportProcess();
-  const totals = reportTotals();
-  const history = reportHistory();
-  const attribution = reportAttribution();
-  const trend = state.history || {};
-  const footprint = footprintBytes(process);
-  const parts = splitBytes(footprint);
-
-  const value = el("hero-value");
-  if (value) value.textContent = parts.value;
-  const unit = el("hero-unit");
-  if (unit) unit.textContent = parts.unit;
-
-  const lead = el("hero-lead");
-  if (lead) {
-    lead.textContent = t("hero.lead",
-      "足迹口径 = 常驻内存按共享页均摊后的 Pss 加上已换出的 SwapPss。它比 RSS 更接近“这个进程实际吃掉多少物理内存 + swap”。"
-      + "插件级数字来自引用图保留量估算，是分摊值而不是精确独占 RSS。")
-      + " " + t("hero.source", "当前来源：") + footprintLabel(process);
-  }
-
-  const tags = el("hero-tags");
-  if (tags) {
-    const items = [];
-    items.push(pill("PID " + fmtCount(process.pid, "—")));
-    items.push(pill("Python " + (process.python_version || "—")));
-    items.push(pill(t("hero.uptime", "已运行") + " " + fmtDuration(process.uptime_seconds)));
-    items.push(pill(t("hero.plugins", "插件") + " " + fmtCount(totals.plugin_count, "—")));
-    items.push(pill(t("hero.samples", "采样点") + " " + fmtCount(history.samples, "0"),
-      num(history.samples) ? "info" : "warn"));
-    items.push(pill(t("hero.interval", "采样间隔") + " " + fmtCount(history.interval_seconds || trend.interval_seconds, "—") + "s"));
-    if (num(process.threads) !== null) items.push(pill(t("hero.threads", "线程") + " " + fmtCount(process.threads)));
-    tags.innerHTML = items.join("");
-  }
-
-  const side = el("hero-side");
-  if (side) {
-    const rows = [];
-    rows.push(heroStat(t("hero.rss", "常驻 RSS"), fmtBytes(process.rss_bytes)));
-    rows.push(heroStat(t("hero.swap", "已换出"),
-      fmtBytes(positive(process.swap_pss_bytes) || positive(process.rollup_swap_bytes) || process.swap_bytes)));
-    rows.push(heroStat(t("hero.baseline", "相对基线"),
-      fmtSigned(known(process.rss_delta_bytes) ? process.rss_delta_bytes : trend.rss_delta_bytes)));
-    rows.push(heroStat(t("hero.trendPerHour", "足迹趋势"),
-      fmtRate(known(trend.footprint_trend_bytes_per_minute) ? trend.footprint_trend_bytes_per_minute : trend.rss_trend_bytes_per_minute)));
-    if (positive(process.cgroup_limit_bytes)) {
-      rows.push(heroStat(t("hero.cgroup", "容器额度"),
-        fmtPercent(process.cgroup_memory_percent) + " / " + fmtBytes(process.cgroup_limit_bytes)));
-    } else {
-      rows.push(heroStat(t("hero.systemFree", "系统可用"), fmtBytes(process.system_available_bytes)));
-    }
-    rows.push(heroStat(t("hero.coverage", "归因覆盖率"),
-      known(attribution.coverage_percent) ? fmtPercent(attribution.coverage_percent) : t("status.notRun", "未运行")));
-    side.innerHTML = rows.join("");
-  }
-}
-
-/* ---------------------------------------------------------- metric cards */
-
-function metricCard(options) {
-  const parts = splitBytes(options.bytes);
-  const valueText = options.text !== undefined
-    ? esc(options.text)
-    : esc(parts.value) + (parts.unit ? "<small>" + esc(parts.unit) + "</small>" : "");
-  return '<article class="metric" style="--tone:var(--' + esc(options.tone) + ')">'
-    + '<div class="label"><i></i>' + esc(options.label) + "</div>"
-    + '<div class="value">' + valueText + "</div>"
-    + '<div class="delta">' + options.delta + "</div>"
-    + '<div class="metric-viz">' + sparkline(options.series) + "</div>"
-    + "</article>";
-}
-
-function renderMetrics() {
-  const node = el("metrics");
-  if (!node) return;
-  const process = reportProcess();
-  const totals = reportTotals();
-  const attribution = reportAttribution();
-  const trend = state.history || {};
-  const points = trendPoints();
-  const gc = process.gc || {};
-
-  const footprint = footprintBytes(process);
-  const swap = positive(process.swap_pss_bytes) || positive(process.rollup_swap_bytes) || positive(process.swap_bytes);
-  const retained = positive(totals.retained_bytes);
-  const blocks = num(process.allocated_blocks);
-
-  const cards = [];
-  cards.push(metricCard({
-    tone: "pink",
-    label: t("metric.footprint", "内存足迹"),
-    bytes: footprint,
-    delta: esc(footprintLabel(process)) + "<br /><b>" + esc(fmtRate(known(trend.footprint_trend_bytes_per_minute)
-      ? trend.footprint_trend_bytes_per_minute
-      : trend.rss_trend_bytes_per_minute)) + "</b>",
-    series: points.map(function (p) { return p.footprint; }),
-  }));
-  cards.push(metricCard({
-    tone: "violet",
-    label: t("metric.rss", "常驻 RSS"),
-    bytes: process.rss_bytes,
-    delta: esc(t("metric.rssSub", "私有脏页") + " " + fmtBytes(process.private_dirty_bytes))
-      + "<br /><b>" + esc(fmtPercent(process.memory_percent, 1, "—") + " " + t("metric.systemShare", "占系统")) + "</b>",
-    series: points.map(function (p) { return p.rss; }),
-  }));
-  cards.push(metricCard({
-    tone: "orange",
-    label: t("metric.swap", "已换出"),
-    bytes: swap === null ? 0 : swap,
-    text: swap === null ? "0<small>B</small>" : undefined,
-    delta: esc(t("metric.swapSub", "被内核挪到 swap/zram 的部分；重新访问会造成停顿。"))
-      + "<br /><b>" + esc(footprint && swap ? fmtPercent(swap / footprint * 100) + " " + t("metric.ofFootprint", "占足迹") : t("metric.swapNone", "没有换出")) + "</b>",
-    series: points.map(function (p) { return p.swap; }),
-  }));
-  cards.push(metricCard({
-    tone: "blue",
-    label: t("metric.retained", "归因保留"),
-    bytes: retained,
-    text: retained === null ? t("status.notRun", "未运行") : undefined,
-    delta: esc(t("metric.retainedSub", "引用图可达对象；共享对象按 1/N 均摊。"))
-      + "<br /><b>" + esc(known(attribution.coverage_percent)
-        ? fmtPercent(attribution.coverage_percent) + " " + t("metric.coverage", "覆盖私有脏页")
-        : t("metric.coverageUnknown", "覆盖率未知")) + "</b>",
-    series: points.map(function (p) { return p.retained; }),
-  }));
-  cards.push(metricCard({
-    tone: "green",
-    label: t("metric.blocks", "分配块数"),
-    text: fmtCount(blocks),
-    delta: esc(t("metric.blocksSub", "CPython 分配器持有的块数，泄漏时会单调上涨。"))
-      + "<br /><b>" + esc(fmtCount(trend.blocks_trend_per_minute === undefined ? null : Math.round(trend.blocks_trend_per_minute * 60), "—")
-        + " " + t("unit.perHour", "/小时")) + "</b>",
-    series: points.map(function (p) { return p.blocks; }),
-  }));
-  void gc;
-  node.innerHTML = cards.join("");
-}
-
-/* ------------------------------------------------------------ chart core */
-
-function smoothLinePath(values, w, h, padX, padY, max, curve) {
-  curve = curve === undefined ? 0.42 : curve;
-  const span = Math.max(1, values.length - 1);
-  const pts = values.map(function (v, i) {
-    return [padX + i * (w - padX * 2) / span, h - padY - (Number(v) || 0) / max * (h - padY * 2)];
+function paintStatic() {
+  document.querySelectorAll("[data-t]").forEach((el) => {
+    el.textContent = t(el.dataset.t);
   });
-  if (!pts.length) return "";
-  let path = "M " + pts[0][0].toFixed(1) + " " + pts[0][1].toFixed(1);
-  for (let i = 1; i < pts.length; i++) {
-    const p0 = pts[i - 1];
-    const p1 = pts[i];
-    const dx = (p1[0] - p0[0]) * curve;
-    path += " C " + (p0[0] + dx).toFixed(1) + " " + p0[1].toFixed(1)
-      + ", " + (p1[0] - dx).toFixed(1) + " " + p1[1].toFixed(1)
-      + ", " + p1[0].toFixed(1) + " " + p1[1].toFixed(1);
+  $("navigation").innerHTML = navs
+    .map(
+      ([id, label, symbol]) =>
+        `<button data-go="${id}" aria-current="${S.tab === id ? "page" : "false"}">${icon(symbol)}${t(label)}</button>`,
+    )
+    .join("");
+  $("navigation").setAttribute("aria-label", t("页面导航"));
+}
+async function api(endpoint, params = {}, method = "GET", local = false) {
+  let value;
+  if (embedded) {
+    value =
+      method === "GET"
+        ? await bridge.apiGet((local ? "" : "observer_") + endpoint, params)
+        : await bridge.apiPost((local ? "" : "observer_") + endpoint, params);
+  } else {
+    const target = endpoint === "start" ? "experiments" : endpoint;
+    const res = await fetch(
+      "./api/" +
+        target +
+        (method === "GET" ? "?" + new URLSearchParams(params) : ""),
+      {
+        method,
+        headers: {
+          Authorization: "Bearer " + S.token,
+          "Content-Type": "application/json",
+        },
+        body: method === "GET" ? undefined : JSON.stringify(params),
+        signal: AbortSignal.timeout(12000),
+      },
+    );
+    const body = await res.json();
+    if (!res.ok)
+      throw new Error(
+        res.status === 401
+          ? t("凭据无效，请重新连接")
+          : body.error || `HTTP ${res.status}`,
+      );
+    value = body;
   }
-  return path;
+  return unwrap(value);
 }
-
-function animateSvgPaths(root) {
-  if (reduceMotion || !root) return;
-  for (const path of root.querySelectorAll(".chart-path,.spark-path")) {
-    let length = 0;
-    try {
-      length = path.getTotalLength();
-    } catch (_error) {
-      continue;
-    }
-    if (!length) continue;
-    path.style.strokeDasharray = length;
-    path.style.strokeDashoffset = length;
-    window.requestAnimationFrame(function () {
-      path.style.transition = "stroke-dashoffset 1.25s var(--ease)";
-      path.style.strokeDashoffset = "0";
-    });
-  }
+function setNotice() {
+  const o = S.overview,
+    messages = [...S.errors];
+  if (o?.stale)
+    messages.unshift(
+      t("数据已过期，下面保留上次成功结果。") +
+        (o.bridge_error ? " " + o.bridge_error : ""),
+    );
+  if (o?.error) messages.push(o.error);
+  if (S.mode === "local")
+    messages.unshift(
+      t("本地模式：尚未连接独立后端，仅显示 AstrBot 进程和本地诊断。"),
+    );
+  $("notice").hidden = !messages.length;
+  $("notice").className = "notice" + (S.errors.length ? " error" : "");
+  $("notice").textContent = [...new Set(messages)].join(" · ");
+  const age = o?.latest?.ts ? Date.now() / 1000 - o.latest.ts : null,
+    stale = o?.stale || age > Math.max(20, (o?.config?.interval || 5) * 4);
+  $("connection").className =
+    "connection" + (S.errors.length ? " error" : stale ? " pending" : "");
+  $("connection").innerHTML =
+    `<i></i><span>${S.errors.length ? t("连接异常") : S.mode === "local" ? t("本地诊断") : stale ? t("数据待更新") : t("独立后端已连接")}</span>`;
+  $("updated").textContent = o?.latest?.ts
+    ? `${t("采样于")} ${stamp(o.latest.ts)}`
+    : "";
 }
-
-function trendPoints() {
-  // points[i] = [ts, rss, pss, swap_pss, allocated_blocks, retained_total, census_bytes]
-  // A zero means "that probe did not run for this sample" and must be treated
-  // as a gap, never as a real drop to zero.
-  const raw = (state.history && state.history.points) || [];
-  const out = [];
-  for (const point of raw) {
-    if (!Array.isArray(point)) continue;
-    const ts = num(point[0]);
-    if (ts === null) continue;
-    const rss = num(point[1]) || 0;
-    const pss = num(point[2]) || 0;
-    const swap = num(point[3]) || 0;
-    const blocks = num(point[4]) || 0;
-    const retained = num(point[5]) || 0;
-    const census = num(point[6]) || 0;
-    out.push({
-      ts: ts,
-      rss: rss,
-      pss: pss,
-      swap: swap,
-      blocks: blocks,
-      retained: retained,
-      census: census,
-      footprint: pss > 0 ? pss + swap : rss,
-    });
-  }
-  return out;
-}
-
-function chartGeometry(node) {
-  const width = Math.max(360, Math.round(node.clientWidth || TREND.w));
-  const height = Math.max(180, Math.round(node.clientHeight || TREND.h));
-  return { w: width, h: height, padX: TREND.padX, padY: TREND.padY };
-}
-
-function renderTrendChart(node, points) {
-  if (!node) return;
-  if (points.length < 2) {
-    node.innerHTML = '<div class="empty">' + esc(t("chart.empty", "暂无历史趋势数据；后台采样几轮后会出现曲线。")) + "</div>";
+async function refresh() {
+  if (S.busy) {
+    S.queued = true;
     return;
   }
-  const geom = chartGeometry(node);
-  const w = geom.w;
-  const h = geom.h;
-  const padX = geom.padX;
-  const padY = geom.padY;
-  const inner = h - padY * 2;
-  const hasPss = points.some(function (p) { return p.pss > 0; });
-
-  const footprint = points.map(function (p) { return p.footprint; });
-  const rss = points.map(function (p) { return p.rss; });
-  const scale = hasPss ? footprint.concat(rss) : footprint;
-  let maxV = Math.max.apply(null, scale);
-  const minV = Math.min.apply(null, scale);
-  // Keep a floor under the lowest sample.  Without it a process sitting at
-  // 600 MB draws a dead-flat line and small regressions become invisible.
-  let floorV = maxV === minV
-    ? Math.max(0, minV - Math.max(1, minV * 0.1))
-    : Math.max(0, minV - (maxV - minV) * 0.35);
-  maxV = maxV * 1.08;
-  const spanV = Math.max(1, maxV - floorV);
-  const yOf = function (value) { return h - padY - ((value - floorV) / spanV) * inner; };
-
-  const defs = '<defs>'
-    + '<linearGradient id="trendArea" x1="0" y1="0" x2="0" y2="1">'
-    + '<stop offset="0%" stop-color="var(--pink)" stop-opacity="0.38" />'
-    + '<stop offset="100%" stop-color="var(--pink)" stop-opacity="0" />'
-    + "</linearGradient>"
-    + '<linearGradient id="drawBars" x1="0" y1="0" x2="0" y2="1">'
-    + '<stop offset="0%" stop-color="var(--blue)" stop-opacity="0.42" />'
-    + '<stop offset="100%" stop-color="var(--blue)" stop-opacity="0.08" />'
-    + "</linearGradient>"
-    + "</defs>";
-
-  let grid = "";
-  for (const ratio of [0, 0.25, 0.5, 0.75, 1]) {
-    const y = padY + ratio * inner;
-    const label = floorV + (maxV - floorV) * (1 - ratio);
-    grid += '<line class="gridline" x1="' + padX + '" y1="' + y.toFixed(1) + '" x2="' + (w - padX) + '" y2="' + y.toFixed(1) + '" />'
-      + '<text class="chart-label" x="5" y="' + (y + 4).toFixed(1) + '">' + esc(fmtBytes(label)) + "</text>";
-  }
-
-  const step = (w - padX * 2) / Math.max(1, points.length - 1);
-  const barMax = Math.max.apply(null, points.map(function (p) { return p.retained; }).concat([0]));
-  let bars = "";
-  if (barMax > 0) {
-    const barWidth = Math.max(8, Math.min(step * 0.34, 24));
-    points.forEach(function (point, index) {
-      if (point.retained <= 0) return;
-      const barHeight = (point.retained / barMax) * inner * 0.42;
-      if (barHeight <= 0.5) return;
-      const x = padX + index * step - barWidth / 2;
-      const y = h - padY - barHeight;
-      bars += '<rect class="chart-draw-bar" x="' + x.toFixed(1) + '" y="' + y.toFixed(1)
-        + '" width="' + barWidth.toFixed(1) + '" height="' + barHeight.toFixed(1)
-        + '" rx="' + Math.min(6, barWidth / 2).toFixed(1) + '" fill="url(#drawBars)"'
-        + ' style="--delay:' + (index * 28) + 'ms" />';
-    });
-  }
-
-  const base = h - padY;
-  const footprintLine = smoothLinePath(footprint.map(function (v) { return v - floorV; }), w, h, padX, padY, spanV);
-  const area = footprintLine + " L " + (w - padX).toFixed(1) + " " + base.toFixed(1)
-    + " L " + padX.toFixed(1) + " " + base.toFixed(1) + " Z";
-  let lines = '<path class="chart-area" d="' + area + '" fill="url(#trendArea)" />'
-    + '<path class="chart-path" d="' + footprintLine + '" stroke-width="4" style="stroke:var(--pink);color:var(--pink)" />';
-  if (hasPss) {
-    const rssLine = smoothLinePath(rss.map(function (v) { return v - floorV; }), w, h, padX, padY, spanV);
-    lines += '<path class="chart-path" d="' + rssLine + '" stroke-width="3" style="stroke:var(--violet);color:var(--violet)" />';
-  }
-
-  const first = points[0];
-  const middle = points[Math.floor((points.length - 1) / 2)];
-  const last = points[points.length - 1];
-  const axis = '<text class="chart-label" x="' + padX + '" y="' + (h - 7) + '">' + esc(fmtClock(first.ts)) + "</text>"
-    + '<text class="chart-label" x="' + (w / 2).toFixed(1) + '" y="' + (h - 7) + '" text-anchor="middle">' + esc(fmtClock(middle.ts)) + "</text>"
-    + '<text class="chart-label" x="' + (w - padX) + '" y="' + (h - 7) + '" text-anchor="end">' + esc(fmtClock(last.ts)) + "</text>";
-
-  node.innerHTML = '<svg viewBox="0 0 ' + w + " " + h + '" role="img" aria-label="'
-    + esc(t("trend.title", "内存足迹趋势")) + '">'
-    + defs + grid + bars + lines + axis + '<g class="chart-hover"></g>'
-    + "</svg><div class=\"chart-tooltip\"></div>";
-
-  animateSvgPaths(node);
-  bindTrendPointer(node, points, { w: w, h: h, padX: padX, padY: padY, hasPss: hasPss, yOf: yOf, barMax: barMax, inner: inner });
-}
-
-function bindTrendPointer(root, points, geom) {
-  const svg = root.querySelector("svg");
-  const tooltip = root.querySelector(".chart-tooltip");
-  const hover = root.querySelector("g.chart-hover");
-  if (!svg || !tooltip || !hover) return;
-  const total = points.length;
-
-  const move = function (event) {
-    const rect = svg.getBoundingClientRect();
-    if (!rect.width) return;
-    const x = (event.clientX - rect.left) / rect.width * geom.w;
-    const ratio = (x - geom.padX) / Math.max(1, geom.w - geom.padX * 2);
-    const index = Math.max(0, Math.min(total - 1, Math.round(ratio * (total - 1))));
-    const point = points[index];
-    const px = geom.padX + index * (geom.w - geom.padX * 2) / Math.max(1, total - 1);
-
-    while (hover.firstChild) hover.removeChild(hover.firstChild);
-    const guide = document.createElementNS(SVG_NS, "line");
-    guide.setAttribute("class", "chart-guide");
-    guide.setAttribute("x1", px.toFixed(1));
-    guide.setAttribute("y1", String(geom.padY));
-    guide.setAttribute("x2", px.toFixed(1));
-    guide.setAttribute("y2", String(geom.h - geom.padY));
-    hover.appendChild(guide);
-
-    const marks = [["--pink", point.footprint]];
-    if (geom.hasPss) marks.push(["--violet", point.rss]);
-    for (const mark of marks) {
-      const dot = document.createElementNS(SVG_NS, "circle");
-      dot.setAttribute("class", "chart-point");
-      dot.setAttribute("cx", px.toFixed(1));
-      dot.setAttribute("cy", geom.yOf(mark[1]).toFixed(1));
-      dot.setAttribute("r", "6");
-      // Presentation attributes cannot resolve var(); inline style can.
-      dot.setAttribute("style", "fill:var(" + mark[0] + ");color:var(" + mark[0] + ")");
-      hover.appendChild(dot);
-    }
-
-    const rows = [
-      [t("trend.footprint", "内存足迹"), fmtBytes(point.footprint)],
-      [t("trend.rss", "常驻 RSS"), fmtBytes(point.rss)],
-      [t("trend.swap", "换出"), point.swap > 0 ? fmtBytes(point.swap) : "—"],
-      [t("trend.retained", "归因保留"), point.retained > 0 ? fmtBytes(point.retained) : "—"],
-      [t("trend.blocks", "分配块"), point.blocks > 0 ? fmtCount(point.blocks) : "—"],
-    ];
-    tooltip.innerHTML = '<div class="tooltip-date">' + esc(fmtTime(point.ts)) + "</div>"
-      + rows.map(function (row) {
-        return '<div class="tooltip-row"><span>' + esc(row[0]) + "</span><b>" + esc(row[1]) + "</b></div>";
-      }).join("");
-    tooltip.style.left = (px / geom.w * 100).toFixed(2) + "%";
-    const localY = event.clientY - rect.top;
-    tooltip.style.top = Math.max(60, Math.min(localY, rect.height - 20)).toFixed(0) + "px";
-    tooltip.classList.add("show");
-  };
-
-  const leave = function () {
-    while (hover.firstChild) hover.removeChild(hover.firstChild);
-    tooltip.classList.remove("show");
-  };
-
-  svg.addEventListener("pointermove", move);
-  svg.addEventListener("pointerleave", leave);
-  svg.addEventListener("pointercancel", leave);
-}
-
-function renderMiniChart(node, series, retainedSeries) {
-  if (!node) return;
-  const primary = sparkValues(series);
-  const secondary = sparkValues(retainedSeries);
-  if (primary.length < 2 && secondary.length < 2) {
-    node.innerHTML = '<div class="empty">' + esc(t("detail.historyEmpty", "还没有这个插件的历史样本")) + "</div>";
-    return;
-  }
-  const geom = chartGeometry(node);
-  const w = geom.w;
-  const h = geom.h;
-  const padX = 34;
-  const padY = 18;
-  const all = primary.concat(secondary);
-  let maxV = Math.max.apply(null, all);
-  const minV = Math.min.apply(null, all);
-  let floorV = maxV === minV ? Math.max(0, minV - Math.max(1, minV * 0.1)) : Math.max(0, minV - (maxV - minV) * 0.3);
-  maxV = maxV * 1.08;
-  const spanV = Math.max(1, maxV - floorV);
-  let grid = "";
-  for (const ratio of [0, 0.5, 1]) {
-    const y = padY + ratio * (h - padY * 2);
-    grid += '<line class="gridline" x1="' + padX + '" y1="' + y.toFixed(1) + '" x2="' + (w - padX) + '" y2="' + y.toFixed(1) + '" />'
-      + '<text class="chart-label" x="3" y="' + (y + 4).toFixed(1) + '">' + esc(fmtBytes(floorV + (maxV - floorV) * (1 - ratio))) + "</text>";
-  }
-  let lines = "";
-  if (primary.length >= 2) {
-    const path = smoothLinePath(primary.map(function (v) { return v - floorV; }), w, h, padX, padY, spanV);
-    lines += '<path class="chart-path" d="' + path + '" stroke-width="3" style="stroke:var(--pink);color:var(--pink)" />';
-  }
-  if (secondary.length >= 2) {
-    const path = smoothLinePath(secondary.map(function (v) { return v - floorV; }), w, h, padX, padY, spanV);
-    lines += '<path class="chart-path" d="' + path + '" stroke-width="2.4" style="stroke:var(--blue);color:var(--blue)" />';
-  }
-  node.innerHTML = '<svg viewBox="0 0 ' + w + " " + h + '" role="img" aria-hidden="true">' + grid + lines + "</svg>";
-  animateSvgPaths(node);
-}
-
-/* ------------------------------------------------------- overview: trend */
-
-function legendItem(varName, label) {
-  return '<span><i style="background:var(' + esc(varName) + ')"></i>' + esc(label) + "</span>";
-}
-
-function trendSummaryItem(label, value, detail) {
-  return '<div class="trend-summary-item"><span>' + esc(label) + "</span><strong>" + esc(value)
-    + '</strong><small title="' + esc(detail || "") + '">' + esc(detail || "") + "</small></div>";
-}
-
-function renderTrend() {
-  const points = trendPoints();
-  const trend = state.history || {};
-  const process = reportProcess();
-  const attribution = reportAttribution();
-  const hasPss = points.some(function (point) { return point.pss > 0; });
-  const hasRetained = points.some(function (point) { return point.retained > 0; });
-
-  renderTrendChart(el("trend-chart"), points);
-
-  const caption = el("trend-caption");
-  if (caption) {
-    if (points.length < 2) {
-      caption.textContent = t("trend.captionEmpty",
-        "采样线程每个周期写一个点，插件加载完成后才开始；等两轮之后这里会出现曲线。");
-    } else {
-      const window_ = points[points.length - 1].ts - points[0].ts;
-      caption.textContent = fmtCount(points.length) + " " + t("trend.points", "个采样点")
-        + " · " + t("trend.window", "窗口") + " " + fmtDuration(window_)
-        + " · " + footprintLabel(process);
-    }
-  }
-
-  const legend = el("trend-legend");
-  if (legend) {
-    const items = [legendItem("--pink", t("trend.footprint", "内存足迹"))];
-    if (hasPss) items.push(legendItem("--violet", t("trend.rss", "常驻 RSS")));
-    if (hasRetained) items.push(legendItem("--blue", t("trend.retainedBars", "归因保留（柱状 · 独立缩放）")));
-    legend.innerHTML = items.join("");
-  }
-
-  const summary = el("trend-summary");
-  if (!summary) return;
-  if (!points.length) {
-    summary.innerHTML = "";
-    return;
-  }
-  const values = points.map(function (point) { return point.footprint; }).filter(function (v) { return v > 0; });
-  const peak = values.length ? Math.max.apply(null, values) : null;
-  const mean = values.length
-    ? values.reduce(function (acc, v) { return acc + v; }, 0) / values.length
-    : null;
-  const peakPoint = peak === null
-    ? null
-    : points.filter(function (point) { return point.footprint === peak; })[0];
-  const first = values.length ? values[0] : null;
-  const last = values.length ? values[values.length - 1] : null;
-  const delta = first === null || last === null ? null : last - first;
-  const rate = known(trend.footprint_trend_bytes_per_minute)
-    ? trend.footprint_trend_bytes_per_minute
-    : trend.rss_trend_bytes_per_minute;
-
-  summary.innerHTML = [
-    trendSummaryItem(t("trend.peak", "窗口峰值"), fmtBytes(peak),
-      peakPoint ? fmtClock(peakPoint.ts) : t("trend.noSample", "还没有样本")),
-    trendSummaryItem(t("trend.mean", "窗口均值"), fmtBytes(mean),
-      fmtCount(values.length) + " " + t("trend.validPoints", "个有效点")),
-    trendSummaryItem(t("trend.delta", "窗口增量"), fmtSigned(delta), fmtRate(rate)),
-    trendSummaryItem(t("trend.coverage", "归因覆盖率"),
-      known(attribution.coverage_percent) ? fmtPercent(attribution.coverage_percent) : t("status.notRun", "未运行"),
-      known(attribution.measured_bytes)
-        ? fmtBytes(attribution.measured_bytes) + " / " + fmtBytes(attribution.private_dirty_bytes)
-        : t("trend.coverageHint", "跑一次引用图扫描才有")),
-  ].join("");
-}
-
-/* --------------------------------------------------------- overview: bars */
-
-function paintBarWidths(node) {
-  const fills = node.querySelectorAll(".bar-fill,.stack-seg");
-  const apply = function () {
-    for (const fill of fills) {
-      if (fill.dataset.width !== undefined) fill.style.width = fill.dataset.width;
-    }
-  };
-  if (reduceMotion) apply();
-  else window.requestAnimationFrame(apply);
-}
-
-function renderBars(node, rows, valueKey, labelKey, emptyText, valueFormatter) {
-  if (!node) return;
-  if (valueFormatter === undefined) valueFormatter = fmtBytes;
-  if (!rows.length) {
-    node.innerHTML = '<div class="empty">' + esc(emptyText) + "</div>";
-    return;
-  }
-  const scale = rows.map(function (row) { return num(row[valueKey]) || 0; });
-  const max = Math.max.apply(null, [1].concat(scale));
-  node.innerHTML = rows.map(function (row, index) {
-    const value = num(row[valueKey]) || 0;
-    const percent = Math.max(0, Math.min(100, value / max * 100));
-    return '<div class="bar-row">'
-      + '<div class="bar-label" title="' + esc(row[labelKey]) + '">' + esc(row[labelKey]) + "</div>"
-      + '<div class="bar-track"><span class="bar-fill" data-width="' + percent.toFixed(2) + '%"'
-      + ' style="width:0;--delay:' + (index * 40) + 'ms"></span></div>'
-      + '<div class="bar-value">' + esc(valueFormatter(value)) + "</div>"
-      + "</div>";
-  }).join("");
-  paintBarWidths(node);
-}
-
-function topBarSource() {
-  // Accuracy order for the "who is using the memory" list: retained graph
-  // share > census shallow size > import-window RSS delta.  Only the first one
-  // reflects the live heap; the last one is a startup measurement.
-  const totals = reportTotals();
-  if (positive(totals.retained_bytes)) return "retained";
-  if (censusReady()) return "census";
-  return "import";
-}
-
-function renderTopBars() {
-  const report = state.report || {};
-  const source = topBarSource();
-  const rows = (report.plugins || []).map(function (row) {
-    let value = 0;
-    if (source === "retained") value = num(row.retained_bytes) || 0;
-    else if (source === "census") value = num(row.census_bytes) || 0;
-    else if (row.import_measured) value = num(row.import_bytes) || 0;
-    return { label: row.display_name || row.name, value: value };
-  }).filter(function (row) { return row.value > 0; })
-    .sort(function (a, b) { return b.value - a.value; })
-    .slice(0, 8);
-
-  const empty = source === "retained"
-    ? t("chart.noRetainedRows", "引用图扫描还没有覆盖到任何插件")
-    : source === "census"
-      ? t("chart.noCensusRows", "普查已运行，但没有识别到插件对象")
-      : t("chart.noImportRows", "没有可用的导入记录");
-  renderBars(el("top-bars"), rows, "value", "label", empty);
-
-  const caption = el("top-caption");
-  if (caption) {
-    caption.textContent = source === "retained"
-      ? t("top.captionRetained", "按引用图保留量；共享对象已按 1/N 均摊")
-      : source === "census"
-        ? t("top.captionCensus", "按存活对象浅层大小")
-        : t("top.captionImport", "按启动期 RSS 差分；不是当前独占占用");
-  }
-}
-
-function renderBreakdown() {
-  const node = el("breakdown-bars");
-  const hint = el("breakdown-hint");
-  const buckets = (state.report && state.report.census_buckets) || [];
-  if (!censusReady()) {
-    if (hint) hint.textContent = t("breakdown.notRun", "对象普查默认关闭；运行一次后才有来源分布。");
-    if (node) node.innerHTML = '<div class="empty">' + esc(t("breakdown.censusEmpty", "尚未运行对象普查")) + "</div>";
-    return;
-  }
-  if (hint) hint.textContent = t("breakdown.desc", "只统计被 GC 跟踪、且能按类型模块归类的对象，不等于 RSS。");
-  renderBars(node, buckets.map(function (item) {
-    return { label: t("bucket." + item.bucket, item.bucket), value: item.bytes };
-  }), "value", "label", t("breakdown.empty", "没有其他对象"));
-}
-
-/* ------------------------------------------------- overview: probe status */
-
-function renderProbeStatus() {
-  const node = el("probe-status");
-  if (!node) return;
-  const process = reportProcess();
-  const report = state.report || {};
-  const hook = process.import_hook || {};
-  const audit = report.audit_meta;
-  const deep = report.deep_meta || {};
-  const census = report.census_meta;
-  const attribution = reportAttribution();
-  const smaps = (state.overview && state.overview.smaps) || {};
-
-  const hookValue = hook.degraded
-    ? t("status.degraded", "已降级")
-    : hook.installed
-      ? t("status.running", "运行中")
-      : hook.plugin_count
-        ? t("status.done", "已完成")
-        : t("status.off", "无记录");
-
-  const smapsSupported = smaps.supported === undefined
-    ? positive(process.pss_bytes) !== null
-    : Boolean(smaps.supported);
-  const smapsDetail = smapsSupported
-    ? t("probe.smapsReads", "读取") + " " + fmtCount(smaps.reads, "0")
-      + " · " + t("probe.smapsCost", "单次") + " " + fmtMs(smaps.elapsed_ms || process.rollup_elapsed_ms)
-      + " · " + t("probe.smapsTtl", "最短间隔") + " " + fmtCount(smaps.min_interval_seconds, "—") + "s"
-      + " · " + t("probe.smapsAge", "样本年龄") + " " + fmtCount(process.rollup_age_seconds, "—") + "s"
-    : t("probe.smapsMissing", "内核没有 /proc/self/smaps_rollup，退回 RSS");
-
-  const retainedValueText = known(attribution.measured_bytes) && attribution.plugin_count
-    ? (attribution.truncated_count ? t("status.partial", "部分覆盖") : t("status.done", "已完成"))
-    : t("status.notRun", "未运行");
-  const retainedDetail = known(attribution.measured_bytes) && attribution.plugin_count
-    ? fmtBytes(attribution.measured_bytes)
-      + " · " + t("probe.retainedCoverage", "覆盖") + " "
-      + (known(attribution.coverage_percent) ? fmtPercent(attribution.coverage_percent) : "—")
-      + " · " + fmtCount(attribution.complete_count, "0") + "/" + fmtCount(attribution.plugin_count, "0")
-      + " " + t("probe.plugins", "个插件完整")
-      + " · " + fmtMs(attribution.work_ms || attribution.elapsed_ms)
-    : t("probe.retainedIdle", "后台按轮转配额切片扫描；也可以点“引用图扫描”");
-
-  node.innerHTML = [
-    statusRow(t("probe.import", "导入成本"), hookValue,
-      fmtCount(hook.plugin_count, "0") + " " + t("probe.plugins2", "个插件") + " · " + fmtMs(hook.overhead_ms),
-      hook.degraded ? "warn" : hook.plugin_count ? "ok" : "neutral"),
-    statusRow(t("probe.smaps", "smaps 足迹"),
-      smapsSupported ? t("status.running", "运行中") : t("status.missing", "不可用"),
-      smapsDetail, smapsSupported ? "ok" : "warn"),
-    statusRow(t("probe.retained", "引用图保留"), retainedValueText, retainedDetail,
-      attribution.truncated_count ? "warn" : attribution.plugin_count ? "ok" : "neutral"),
-    statusRow(t("probe.census", "对象普查"),
-      census ? (census.truncated ? t("status.truncated", "已截断") : t("status.done", "已完成")) : t("status.notRun", "未运行"),
-      census ? fmtMs(census.elapsed_ms) + " · 1/" + fmtCount(census.sample_rate) : t("probe.manual", "仅手动执行"),
-      census && census.truncated ? "warn" : census ? "ok" : "neutral"),
-    statusRow(t("probe.audit", "依赖审计"),
-      audit ? t("status.done", "已完成") : t("status.notRun", "未运行"),
-      audit ? fmtCount(audit.audited) + "/" + fmtCount(audit.plugin_count) + " " + t("probe.plugins2", "个插件")
-        : t("probe.manualFirst", "首次查看或手动执行"),
-      audit ? "ok" : "neutral"),
-    statusRow(t("probe.deep", "引用图扫描"),
-      deep.generated_at
-        ? (deep.truncated ? t("status.truncated", "已截断") : t("status.ready", "已有结果"))
-        : t("status.notRun", "未运行"),
-      deep.generated_at
-        ? fmtTime(deep.generated_at) + " · " + fmtCount(deep.rounds, "0") + " " + t("probe.round", "轮")
-        : t("probe.manual", "仅手动执行"),
-      deep.truncated ? "warn" : deep.generated_at ? "ok" : "neutral"),
-  ].join("");
-}
-
-/* ------------------------------------------------- overview: attribution */
-
-function renderAttribution() {
-  const attribution = reportAttribution();
-  const process = reportProcess();
-  const stack = el("attribution-stack");
-  const grid = el("attribution-grid");
-  const caption = el("attribution-caption");
-
-  const exclusive = Math.max(0, num(attribution.exclusive_bytes) || 0);
-  const shared = Math.max(0, num(attribution.shared_bytes) || 0);
-  const measured = Math.max(0, num(attribution.measured_bytes) || 0);
-  const floorBytes = positive(attribution.private_dirty_bytes)
-    || positive(process.private_dirty_bytes)
-    || positive(attribution.footprint_bytes)
-    || footprintBytes(process)
-    || 0;
-  const uncovered = Math.max(0, floorBytes - measured);
-  const total = Math.max(1, exclusive + shared + uncovered);
-
-  if (caption) {
-    caption.textContent = measured > 0
-      ? t("attribution.desc",
-        "引用图从每个插件对象出发走 gc.get_referents；只被一个插件引用的算独占，被多个插件共享的按 1/N 均摊。"
-        + "剩下那截灰色是解释器内部、C 扩展 arena 和原生缓冲，Python 层面拿不到归属，所以覆盖率永远不到 100%。")
-      : t("attribution.notRun", "引用图扫描还没有结果；后台会按轮转配额补齐，也可以点右上角“引用图扫描”。");
-  }
-
-  if (stack) {
-    if (measured <= 0) {
-      stack.innerHTML = "";
-    } else {
-      const segments = [
-        ["--blue", exclusive, t("attribution.exclusive", "插件独占")],
-        ["--violet", shared, t("attribution.shared", "共享均摊")],
-        ["--line-strong", uncovered, t("attribution.uncovered", "未归因")],
-      ];
-      stack.innerHTML = segments.map(function (segment) {
-        const percent = segment[1] / total * 100;
-        if (percent <= 0) return "";
-        return '<span class="stack-seg" data-width="' + percent.toFixed(2) + '%"'
-          + ' style="width:0;background:var(' + esc(segment[0]) + ')"'
-          + ' title="' + esc(segment[2] + " " + fmtBytes(segment[1]) + " (" + percent.toFixed(1) + "%)") + '"></span>';
-      }).join("");
-      paintBarWidths(stack);
-    }
-  }
-
-  if (!grid) return;
-  const method = attribution.method || t("status.notRun", "未运行");
-  grid.innerHTML = [
-    kv(t("attribution.method", "归因方法"), method),
-    kv(t("attribution.coverage", "覆盖私有脏页"),
-      known(attribution.coverage_percent) ? fmtPercent(attribution.coverage_percent) : "—"),
-    kv(t("attribution.exclusive", "插件独占"), fmtBytes(positive(exclusive))),
-    kv(t("attribution.shared", "共享均摊"), fmtBytes(positive(shared))),
-    kv(t("attribution.complete", "完整 / 截断"),
-      fmtCount(attribution.complete_count, "0") + " / " + fmtCount(attribution.truncated_count, "0")),
-    kv(t("attribution.scanned", "已扫描对象"), fmtCount(attribution.scanned_objects, "0")),
-  ].join("");
-}
-
-/* -------------------------------------------------------------- plugins */
-
-function retainedValue(row) {
-  if (!row) return null;
-  const flat = num(row.retained_bytes);
-  if (flat !== null && flat > 0) return flat;
-  return row.retained ? num(row.retained.total_bytes) : null;
-}
-
-function rowTrend(row) {
-  // Retained trend is the honest one when the graph scan has covered this
-  // plugin; otherwise fall back to the census-based trend.
-  const retained = num(row.retained_trend_bytes_per_minute);
-  if (retained !== null && retainedValue(row) !== null) return retained;
-  return num(row.trend_bytes_per_minute);
-}
-
-function rowSeries(row) {
-  const retained = (state.history && state.history.retained_series_by_plugin) || {};
-  const census = (state.history && state.history.series_by_plugin) || {};
-  const primary = sparkValues(retained[row.name]);
-  if (primary.length >= 2) return retained[row.name];
-  return census[row.name];
-}
-
-function sortValue(row, key) {
-  switch (key) {
-    case "name": return String(row.display_name || row.name || "").toLowerCase();
-    case "import": return num(row.import_bytes);
-    case "census": return num(row.census_bytes);
-    case "objects": return num(row.census_objects);
-    case "retained": return retainedValue(row);
-    case "trend": return rowTrend(row);
-    default: return null;
-  }
-}
-
-function compareRows(left, right) {
-  const a = sortValue(left, state.sortKey);
-  const b = sortValue(right, state.sortKey);
-  const aMissing = a === null || a === undefined || a === "";
-  const bMissing = b === null || b === undefined || b === "";
-  if (aMissing !== bMissing) return aMissing ? 1 : -1;
-  if (aMissing) return String(left.name || "").localeCompare(String(right.name || ""));
-  let result;
-  if (typeof a === "string" || typeof b === "string") result = String(a).localeCompare(String(b));
-  else result = a === b ? 0 : a < b ? -1 : 1;
-  return state.sortDir === "asc" ? result : -result;
-}
-
-function renderTableHead() {
-  const node = el("plugin-head");
-  if (!node) return;
-  node.innerHTML = COLUMNS.map(function (column) {
-    const sortable = column.sortable !== false;
-    const active = sortable && state.sortKey === column.key;
-    return "<th"
-      + (sortable ? ' data-sort="' + esc(column.key) + '"' : "")
-      + (active ? ' class="is-sorted" data-dir="' + esc(state.sortDir) + '"' : "")
-      + ">" + esc(t(column.i18n, column.fallback)) + "</th>";
-  }).join("");
-}
-
-function pluginNameCell(row) {
-  const tags = [];
-  if (row.is_self) tags.push('<span class="tag">' + esc(t("table.self", "本插件")) + "</span>");
-  if (row.reserved) tags.push('<span class="tag">' + esc(t("table.reserved", "内置")) + "</span>");
-  if (!row.activated) tags.push('<span class="tag">' + esc(t("table.inactive", "未启用")) + "</span>");
-  return '<div class="name-cell"><div class="name-text"><strong>' + esc(row.display_name || row.name)
-    + "</strong><small>" + esc(row.name) + "</small></div>" + tags.join("") + "</div>";
-}
-
-function renderTable() {
-  renderTableHead();
-  const body = el("plugin-body");
-  if (!body) return;
-  const allRows = ((state.report && state.report.plugins) || []).slice();
-  const needle = state.search.trim().toLowerCase();
-  const rows = allRows.filter(function (row) {
-    if (!needle) return true;
-    return [row.name, row.display_name, row.import_key].some(function (value) {
-      return String(value || "").toLowerCase().includes(needle);
-    });
-  }).sort(compareRows);
-
-  const count = el("plugin-count");
-  if (count) count.textContent = rows.length + "/" + allRows.length + " " + t("metric.plugins", "个插件");
-
-  const censusState = el("census-state");
-  if (censusState) {
-    censusState.textContent = censusReady()
-      ? t("table.censusReady", "对象普查：已测量")
-      : t("table.censusMissing", "对象普查：未运行");
-    censusState.dataset.level = censusReady() ? "ok" : "warn";
-  }
-
-  const deepState = el("deep-state");
-  if (deepState) {
-    const meta = (state.report && state.report.deep_meta) || {};
-    deepState.textContent = meta.generated_at
-      ? t("table.deep", "引用图") + " · " + fmtTime(meta.generated_at)
-      : t("table.deepMissing", "引用图：未运行");
-    deepState.dataset.level = meta.generated_at && !meta.truncated ? "ok" : meta.truncated ? "warn" : "";
-  }
-
-  const hint = el("plugin-hint");
-  if (hint) {
-    const attribution = reportAttribution();
-    hint.textContent = known(attribution.measured_bytes) && attribution.plugin_count
-      ? t("table.retainedHint",
-        "引用图保留量 = 该插件对象独占的字节 + 共享对象按 1/N 均摊的份额。它是分摊值，不是精确独占 RSS；点一行看细节。")
-      : censusReady()
-        ? t("table.censusHint", "对象普查是按类型模块归属的浅层估算；点击一行查看导入、对象类型和引用图结果。")
-        : t("table.importHint",
-          "导入成本只回答“启动时加载它大约增加了多少 RSS”，不能当作当前插件独占内存；等后台轮转扫描补齐引用图保留量。");
-  }
-
-  if (!rows.length) {
-    body.innerHTML = '<tr><td colspan="' + COLUMNS.length + '" class="empty">'
-      + esc(needle ? t("table.noMatch", "没有匹配的插件") : t("table.empty", "暂无插件数据"))
-      + "</td></tr>";
-    return;
-  }
-
-  body.innerHTML = rows.map(function (row) {
-    const retained = row.retained;
-    const retainedTotal = retainedValue(row);
-    const retainedText = retained && retainedTotal !== null
-      ? esc(fmtBytes(retainedTotal)) + "<small class=\"muted-block\">"
-        + esc(fmtBytes(retained.exclusive_bytes) + " " + t("table.exclusiveShort", "独占")
-          + " / " + fmtBytes(retained.shared_bytes) + " " + t("table.sharedShort", "均摊"))
-        + (retained.truncated ? " " + esc(t("table.truncatedShort", "· 截断")) : "")
-        + "</small>"
-      : "—";
-    const trend = fmtRate(rowTrend(row));
-    const trendClass = trend.indexOf("+") === 0 ? " up" : trend.indexOf("−") === 0 ? " down" : "";
-    const censusText = censusReady() ? fmtBytes(row.census_bytes, "0 B") : "—";
-    const objectsText = censusReady() ? fmtCount(row.census_objects, "0") : "—";
-    return '<tr data-name="' + esc(row.name) + '" tabindex="0" aria-label="' + esc(row.display_name || row.name) + '">'
-      + '<td class="cell-name">' + pluginNameCell(row) + "</td>"
-      + '<td class="num">' + esc(fmtBytes(row.import_bytes))
-      + (row.import_measured ? "" : '<small class="muted-block">' + esc(t("status.unknown", "未知")) + "</small>")
-      + "</td>"
-      + '<td class="num">' + esc(censusText) + "</td>"
-      + '<td class="num">' + esc(objectsText) + "</td>"
-      + '<td class="num">' + retainedText + "</td>"
-      + '<td class="num' + trendClass + '">' + esc(trend) + "</td>"
-      + "<td>" + sparkline(rowSeries(row)) + "</td>"
-      + "</tr>";
-  }).join("");
-}
-
-/* --------------------------------------------------------------- imports */
-
-function renderImports() {
-  const report = state.report || {};
-  const totals = report.totals || {};
-  const hook = (report.process && report.process.import_hook) || {};
-
-  const cards = el("import-cards");
-  if (cards) {
-    cards.innerHTML = [
-      metricCard({
-        tone: "pink",
-        label: t("metric.totalImport", "导入账本"),
-        bytes: totals.import_total_bytes,
-        delta: esc(t("imports.accounting", "插件代码与首次加载的第三方包之和"))
-          + "<br /><b>" + esc(t("metric.pluginCode", "插件代码") + " " + fmtBytes(totals.import_self_bytes_total)
-            + " · " + t("metric.packages", "第三方包") + " " + fmtBytes(totals.packages_bytes)) + "</b>",
-      }),
-      metricCard({
-        tone: "violet",
-        label: t("metric.hookWindow", "记录窗口"),
-        bytes: hook.rss_growth_bytes,
-        delta: esc(hook.rss_source
-          ? t("hero.source", "当前来源：") + hook.rss_source
-          : t("status.unavailable", "RSS 不可用"))
-          + "<br /><b>" + esc(t("metric.calls", "导入调用") + " " + fmtCount(hook.calls, "0")
-            + " · " + t("metric.hookCost", "钩子开销") + " " + fmtMs(hook.overhead_ms)) + "</b>",
-      }),
-      metricCard({
-        tone: "green",
-        label: t("metric.pluginCoverage", "插件覆盖"),
-        text: fmtCount(hook.plugin_count, "0"),
-        delta: esc(t("imports.coverageSub", "只有钩子安装后首次加载的插件可测量"))
-          + "<br /><b>" + esc(t("metric.packagesCount", "包数量") + " " + fmtCount(hook.package_count, "0")
-            + " · " + (hook.degraded
-              ? t("status.degraded", "已降级")
-              : hook.installed ? t("status.running", "运行中") : t("status.finished", "已结束"))) + "</b>",
-      }),
-    ].join("");
-  }
-
-  const packageHint = el("package-hint");
-  if (packageHint) {
-    packageHint.textContent = t("imports.packageHint", "同一个包只记在第一个导入者名下，共用它的插件不会重复计费。");
-  }
-
-  const packageHead = el("package-head");
-  if (packageHead) {
-    packageHead.innerHTML = [
-      t("col.package", "包"), t("col.bytes", "RSS 差分"),
-      t("col.modules", "模块"), t("col.importer", "首个导入者"),
-    ].map(function (value) { return "<th>" + esc(value) + "</th>"; }).join("");
-  }
-
-  const packageBody = el("package-body");
-  const packages = report.packages || [];
-  if (packageBody) {
-    packageBody.innerHTML = packages.length
-      ? packages.map(function (item) {
-        return "<tr>"
-          + '<td class="cell-name" title="' + esc(item.name) + '">' + esc(item.name) + "</td>"
-          + '<td class="num">' + esc(fmtBytes(item.bytes)) + "</td>"
-          + '<td class="num">' + esc(fmtCount(item.modules)) + "</td>"
-          + "<td>" + esc(item.first_importer || "—") + "</td>"
-          + "</tr>";
-      }).join("")
-      : '<tr><td colspan="4" class="empty">'
-        + esc(t("imports.empty", "没有可显示的导入记录；重启后可覆盖更多插件。")) + "</td></tr>";
-  }
-
-  const importHead = el("import-plugin-head");
-  if (importHead) {
-    importHead.innerHTML = [
-      t("col.plugin", "插件"), t("col.gross", "总成本"), t("col.self", "自身模块"),
-      t("col.modules", "模块"), t("col.packages", "包数"),
-    ].map(function (value) { return "<th>" + esc(value) + "</th>"; }).join("");
-  }
-
-  const importBody = el("import-plugin-body");
-  const rows = (report.plugins || []).filter(function (row) { return row.import_measured; })
-    .sort(function (a, b) { return (num(b.import_bytes) || 0) - (num(a.import_bytes) || 0); });
-  if (importBody) {
-    importBody.innerHTML = rows.length
-      ? rows.map(function (row) {
-        return '<tr data-name="' + esc(row.name) + '" tabindex="0">'
-          + '<td class="cell-name">' + pluginNameCell(row) + "</td>"
-          + '<td class="num">' + esc(fmtBytes(row.import_bytes)) + "</td>"
-          + '<td class="num">' + esc(fmtBytes(row.import_self_bytes)) + "</td>"
-          + '<td class="num">' + esc(fmtCount(row.import_modules)) + "</td>"
-          + '<td class="num">' + esc(fmtCount((row.import_packages || []).length, "0")) + "</td>"
-          + "</tr>";
-      }).join("")
-      : '<tr><td colspan="5" class="empty">' + esc(t("imports.emptyPlugins", "没有已测量的插件")) + "</td></tr>";
-  }
-}
-
-/* ----------------------------------------------------------------- audit */
-
-function renderAudit() {
-  const report = state.report || {};
-  const meta = report.audit_meta;
-
-  const summary = el("audit-summary");
-  if (summary) {
-    if (!meta) {
-      summary.textContent = t("audit.notRun", "尚未运行；打开这一页会自动建立一次缓存。");
-    } else {
-      const parts = [
-        t("audit.scanned", "扫描") + " " + fmtCount(meta.audited) + "/" + fmtCount(meta.plugin_count),
-        fmtMs(meta.elapsed_ms),
-        t("audit.findings", "发现") + " " + fmtCount(meta.finding_count) + " " + t("audit.items", "处"),
-      ];
-      if (positive(meta.pending)) {
-        parts.push(t("audit.pending", "还剩") + " " + fmtCount(meta.pending) + " "
-          + t("audit.pendingTail", "个未扫，再跑一次会接着扫"));
+  if (!S.mode) return;
+  S.busy = true;
+  $("refresh").disabled = true;
+  const errors = [];
+  try {
+    if (S.mode === "observer") {
+      const o = await api("overview"),
+        previous = S.overview?.run?.id;
+      S.overview = o;
+      const current = o.run?.id;
+      if (previous && previous !== current) {
+        S.report = {};
+        S.trend = { samples: [] };
+        S.local = {};
+        localLoaded = false;
+        chart?.reset();
       }
-      summary.textContent = parts.join(" · ");
+      const requestedRange = S.range;
+      const tasks = [
+        ["runs", () => api("runs")],
+        ["jobs", () => api("experiments")],
+      ];
+      if (current)
+        tasks.push(
+          ["report", () => api("run", { id: current, samples: 0 })],
+          [
+            "trend",
+            () => api("trend", { id: current, seconds: requestedRange }),
+          ],
+        );
+      else {
+        S.report = {};
+        S.trend = { samples: [] };
+      }
+      const results = await Promise.allSettled(tasks.map(([, call]) => call()));
+      results.forEach((r, i) => {
+        if (r.status === "fulfilled") {
+          if (tasks[i][0] !== "trend" || requestedRange === S.range)
+            S[tasks[i][0]] = r.value;
+        } else
+          errors.push(
+            t("部分数据读取失败") +
+              " (" +
+              tasks[i][0] +
+              "): " +
+              r.reason.message,
+          );
+      });
+    } else {
+      const [overview, local, history] = await Promise.all([
+        api("overview", {}, "GET", true),
+        api(
+          "plugins",
+          { sample: 0, census: 0, audit: 0, deep: 0 },
+          "GET",
+          true,
+        ),
+        api("history", { limit: 480 }, "GET", true),
+      ]);
+      S.local = local;
+      S.overview = {
+        latest: {
+          ts: overview.server_time,
+          state: "running",
+          memory: {
+            current: overview.process?.rss_bytes,
+            swap: overview.process?.swap_bytes,
+          },
+          processes: [],
+        },
+        run: {},
+        local: overview,
+      };
+      S.trend = {
+        samples: (history.rss || [])
+          .filter(([ts]) => !S.range || ts >= Date.now() / 1000 - S.range)
+          .map(([ts, value]) => ({ ts, memory: { current: value } })),
+      };
+    }
+    S.errors = errors;
+  } catch (error) {
+    S.errors = [error.message];
+  } finally {
+    S.busy = false;
+    $("refresh").disabled = false;
+    $("content").setAttribute("aria-busy", "false");
+    setNotice();
+    render();
+    if (S.queued) {
+      S.queued = false;
+      refresh();
     }
   }
-
-  const head = el("audit-head");
-  if (head) {
-    head.innerHTML = [
-      t("col.module", "模块"), t("col.cost", "已知成本"),
-      t("col.sharedBy", "共用插件"), t("col.loadStyle", "加载方式"),
-    ].map(function (value) { return "<th>" + esc(value) + "</th>"; }).join("");
-  }
-
-  const body = el("audit-body");
-  const rows = report.opportunities || [];
-  if (body) {
-    body.innerHTML = meta && rows.length
-      ? rows.map(function (row) {
-        const plugins = row.plugins || [];
-        const tail = plugins.length > 4 ? " …" : "";
-        return "<tr>"
-          + '<td class="cell-name"><strong>' + esc(row.module) + "</strong><small>"
-          + esc(plugins.slice(0, 4).join(", ") + tail) + "</small></td>"
-          + '<td class="num">' + esc(fmtBytes(row.cost_bytes)) + "</td>"
-          + '<td class="num">' + esc(fmtCount(row.shared_by)) + "</td>"
-          + "<td>" + esc(positive(row.guarded)
-            ? row.guarded + " " + t("audit.guarded", "处为可选导入")
-            : t("audit.eager", "顶层加载")) + "</td>"
-          + "</tr>";
-      }).join("")
-      : '<tr><td colspan="4" class="empty">' + esc(meta
-        ? t("audit.empty", "没有找到带已知成本的重依赖")
-        : t("audit.emptyNotRun", "尚未运行依赖审计")) + "</td></tr>";
-  }
-
-  const unknownNode = el("audit-unknown");
-  const unknown = (meta && meta.unknown_modules) || [];
-  if (unknownNode) {
-    unknownNode.hidden = !unknown.length;
-    unknownNode.textContent = unknown.length
-      ? t("audit.unknown", "源码里还发现没有成本表的第三方模块：") + " " + unknown.slice(0, 24).join(", ")
-      : "";
-  }
 }
-
-/* ---------------------------------------------------------------- census */
-
-function renderCensus() {
-  const report = state.report || {};
-  const meta = report.census_meta;
-
-  const summary = el("census-summary");
-  if (summary) {
-    summary.textContent = meta
-      ? t("census.scanned", "扫描") + " " + fmtCount(meta.scanned) + "/" + fmtCount(meta.total_objects)
-        + " · " + fmtMs(meta.elapsed_ms)
-        + " · " + (meta.truncated ? t("status.truncated", "已截断") : t("status.complete", "完成"))
-      : t("census.notRun", "尚未运行。这是唯一一次会遍历整个 GC 对象列表的操作，默认关闭。");
-  }
-
-  const warning = el("census-warning");
-  if (warning) {
-    warning.textContent = meta
-      ? (meta.scaled
-        ? t("census.sampled", "当前是抽样估算，数值已按抽样率放大，适合比较比例而不是绝对值。")
-        : t("census.limit", "只统计 GC 跟踪对象的浅层大小，不能与进程足迹直接相加。"))
-      : t("census.warning", "运行前请确认可以接受一次短暂停顿；在有 swap 的小机器上，遍历会把换出的页面读回内存。");
-  }
-
-  const pluginRows = (report.plugins || [])
-    .filter(function (row) { return censusReady() && positive(row.census_bytes) !== null; })
-    .map(function (row) {
-      return { label: truncate(row.display_name || row.name, 28), value: num(row.census_bytes) || 0 };
-    })
-    .sort(function (a, b) { return b.value - a.value; })
-    .slice(0, 18);
-  renderBars(el("census-plugin-bars"), pluginRows, "value", "label",
-    t("census.emptyPlugins", "没有识别到归属插件的对象"));
-
-  const bucketRows = (report.census_buckets || []).map(function (item) {
-    return { label: t("bucket." + item.bucket, item.bucket), value: num(item.bytes) || 0 };
-  });
-  renderBars(el("census-bucket-bars"), bucketRows, "value", "label",
-    t("census.emptyBuckets", "没有其他对象来源"));
+function schedule() {
+  clearInterval(timer);
+  const seconds = Number($("autorefresh").value);
+  if (seconds)
+    timer = setInterval(() => {
+      if (
+        !document.hidden &&
+        !S.scanBusy &&
+        !$("confirm").open &&
+        $("drawer").hidden
+      )
+        refresh();
+    }, seconds * 1000);
 }
-
-/* ---------------------------------------------------------------- alerts */
-
-function alertKind(kind) {
-  const key = kind === "rss" ? "kind.rss"
-    : kind === "rss_growth" ? "kind.rssGrowth"
-      : kind === "size" ? "kind.size"
-        : "kind.growth";
-  return t("alerts." + key, kind || t("alerts.unknown", "告警"));
+function title() {
+  const subtitles = {
+    overview: "从服务总量到插件证据，先看变化，再找原因。",
+    plugins: "清单、启动增量和诊断证据，放在同一张表里。",
+    startup: "还原加载顺序，区分导入、构造与初始化。",
+    diagnostics: "需要时再深入，日常查看不会自动扫描对象。",
+    experiments: "对比停用前后，验证实际能省下多少内存。",
+    guide: "理解数字的边界，才不会把线索当结论。",
+  };
+  const labels = {
+    overview: "MEMORY OBSERVATORY",
+    plugins: "PLUGIN ATLAS",
+    startup: "STARTUP TRACE",
+    diagnostics: "DIAGNOSTIC LAB",
+    experiments: "CONTROLLED COMPARISON",
+    guide: "READING THE EVIDENCE",
+  };
+  $("page-title").textContent = t(navs.find((n) => n[0] === S.tab)[1]);
+  $("eyebrow").textContent = labels[S.tab];
+  $("page-subtitle").textContent = t(subtitles[S.tab]);
+  document
+    .querySelectorAll("nav [data-go]")
+    .forEach((el) =>
+      el.setAttribute(
+        "aria-current",
+        el.dataset.go === S.tab ? "page" : "false",
+      ),
+    );
 }
-
-function alertValue(item) {
-  /* Alert.value comes from the sampler in MB (or MB/hour for growth kinds), not bytes. */
-  const value = num(item.value);
-  if (value === null) return "—";
-  const bytes = value * MB;
-  return /growth/.test(String(item.kind)) ? fmtRate(bytes / 60) : fmtBytes(bytes);
+function navigate(tab) {
+  if (!navs.some((n) => n[0] === tab)) tab = "overview";
+  S.tab = tab;
+  history.replaceState(null, "", "#" + tab);
+  title();
+  render(true);
+  if (tab === "diagnostics") loadDiagnostics();
+  if (!S.busy && S.mode && !S.overview) refresh();
 }
-
-function renderAlerts() {
-  const count = state.alerts.length;
-
-  const badge = el("alert-badge");
-  if (badge) {
-    badge.textContent = String(count);
-    badge.hidden = !count;
-  }
-
-  const summary = el("alerts-summary");
-  if (summary) {
-    summary.textContent = state.alertsEnabled
-      ? t("alerts.enabled", "告警已启用") + " · " + fmtCount(count) + " " + t("alerts.records", "条记录")
-      : t("alerts.disabled", "还没有设置阈值；可以在插件配置里打开进程足迹或对象普查规则。");
-  }
-
-  const node = el("alerts");
-  if (!node) return;
-  if (!count) {
-    node.innerHTML = '<div class="empty">' + esc(t("alerts.empty", "暂无告警")) + "</div>";
+function render(force = false) {
+  title();
+  if (!S.overview && S.tab !== "guide") {
+    if (S.errors.length)
+      $("content").innerHTML =
+        `<div class="card">${empty(t("暂时无法读取数据"), t("请检查插件后端配置和服务状态，然后点击刷新。"))}</div>`;
     return;
   }
-  node.innerHTML = state.alerts.slice().reverse().map(function (item) {
-    const who = item.plugin === "__process__" ? t("alerts.process", "进程") : item.plugin;
-    return '<article class="alert" data-kind="' + esc(item.kind) + '">'
-      + '<div class="alert-time">' + esc(fmtTime(item.ts)) + "</div>"
-      + '<div class="alert-msg"><strong>' + esc(who) + "</strong>"
-      + '<span class="tag">' + esc(alertKind(item.kind)) + "</span>"
-      + "<p>" + esc(item.message) + "</p></div>"
-      + '<div class="alert-value">' + esc(alertValue(item)) + "</div>"
-      + "</article>";
-  }).join("");
+  const rebuild = force || viewBuilt !== S.tab;
+  if (rebuild) {
+    chart?.destroy();
+    chart = null;
+    viewBuilt = S.tab;
+  }
+  if (S.tab === "overview") renderOverview(rebuild);
+  if (S.tab === "plugins") renderPlugins(rebuild);
+  if (S.tab === "startup") renderStartup(rebuild);
+  if (S.tab === "diagnostics") renderDiagnostics(rebuild);
+  if (S.tab === "experiments") renderExperiments(rebuild);
+  if (S.tab === "guide" && rebuild) renderGuide();
+}
+function trendControls() {
+  return `<div class="chart-toolbar"><div class="pills" role="group" aria-label="${t("时间范围")}">${[
+    [900, "15m"],
+    [3600, "1h"],
+    [21600, "6h"],
+    [86400, "24h"],
+    [0, t("本次启动")],
+  ]
+    .map(
+      ([v, l]) =>
+        `<button data-range="${v}" aria-pressed="${S.range === v}">${l}</button>`,
+    )
+    .join(
+      "",
+    )}</div><div class="chart-options"><label class="sr-only" for="chart-metric">${t("趋势指标")}</label><select id="chart-metric">${[
+    ["current", S.mode === "local" ? "进程 RSS" : "服务物理记账"],
+    ["anon_swap", "匿名内存 + Swap"],
+    ["swap", "Swap"],
+  ]
+    .filter(([v]) => S.mode !== "local" || v === "current")
+    .map(
+      ([v, l]) =>
+        `<option value="${v}" ${S.metric === v ? "selected" : ""}>${t(l)}</option>`,
+    )
+    .join(
+      "",
+    )}</select><label><input type="checkbox" id="chart-zero" ${S.zero ? "checked" : ""}>${t("从零开始")}</label><button id="chart-reset" class="text-button" hidden>${t("复位")}</button></div></div>`;
+}
+function renderOverview(build) {
+  if (build) {
+    $("content").innerHTML =
+      `<div id="overview-metrics" class="metrics"></div><div class="overview-grid"><section class="card chart-card">${cardHead(t("内存趋势"), t("真实采样点 · 悬停查看 · 拖动放大"), tag(t("服务整体")))}${trendControls()}<div id="trend" class="trend"></div><p id="trend-note" class="chart-hint"></p><div id="trend-summary" class="chart-summary"></div></section><aside id="insight" class="card insight-card"></aside></div><div class="two-col"><section class="card">${cardHead(t("启动关注项"), t("按加载期间 RSS + Swap 增量排序"), `<button data-go="plugins" class="text-button">${t("全部插件")} ↗</button>`)}<div id="top-plugins"></div></section><section class="card">${cardHead(t("服务进程"), t("进程包含在服务总量中，不要重复相加"), '<span class="tag neutral">/proc</span>')}<div id="processes"></div></section></div>`;
+    chart = new TrendChart($("trend"), (stats, zoom) => {
+      $("trend-summary").innerHTML = [
+        ["最低", size(stats.min)],
+        ["最高", size(stats.max)],
+        ["区间变化", signedSize(stats.change)],
+      ]
+        .map(
+          ([a, b]) =>
+            `<div><span>${t(a)}</span><strong>${esc(b)}</strong></div>`,
+        )
+        .join("");
+      $("chart-reset").hidden = !zoom;
+    });
+    $("chart-metric").onchange = (e) => {
+      S.metric = e.target.value;
+      chart.reset();
+      chart.set(S.trend.samples || [], S.metric, S.zero);
+    };
+    $("chart-zero").onchange = (e) => {
+      S.zero = e.target.checked;
+      chart.set(S.trend.samples || [], S.metric, S.zero);
+    };
+    $("chart-reset").onclick = () => chart.reset();
+  }
+  const latest = S.overview.latest || {},
+    m = latest.memory || {},
+    r = rows(),
+    measured = r.filter((p) => finite(p.delta));
+  $("overview-metrics").innerHTML =
+    metric(
+      t(S.mode === "local" ? "进程 RSS" : "服务物理记账"),
+      m.current,
+      t(S.mode === "local" ? "仅 AstrBot 主进程" : "含子进程与文件缓存"),
+      "bytes",
+      "server",
+    ) +
+    metric(t("匿名内存 + Swap"), m.anon_swap, t("包括换出量，并非物理内存")) +
+    metric("Swap", m.swap, t("已换出到磁盘的内存"), "bytes", "box") +
+    metric(
+      t("已发现插件"),
+      r.length,
+      `${measured.length} ${t("有启动增量证据")}`,
+      "",
+      "plugins",
+    );
+  const h = latest.host || {},
+    available = h.available,
+    total = h.total,
+    ratio =
+      finite(available) && total
+        ? Math.max(0, Math.min(100, (available / total) * 100))
+        : null,
+    ready = S.overview.run?.ready_at,
+    started = S.overview.run?.started_at;
+  $("insight").innerHTML =
+    `<div class="insight-head"><div class="eyebrow">SERVICE PULSE</div><h2 class="status-heading"><i class="dot ${latest.state !== "running" ? "bad" : ""}"></i>${statusName(latest.state)}</h2><p>${t("持续观察，不打扰日常使用。")}</p></div><div class="insight-metrics"><div><div class="stat-row"><span>${t("宿主机可用")}</span><strong>${size(available)}</strong></div>${ratio !== null ? `<svg class="meter" width="100%" height="5" viewBox="0 0 100 5" preserveAspectRatio="none" aria-label="${ratio.toFixed(1)}%"><rect width="100" height="5" fill="var(--soft)"/><rect width="${ratio}" height="5" fill="var(--accent)"/></svg>` : ""}</div><div class="stat-row"><span>${t("就绪耗时")}</span><strong>${finite(ready) && finite(started) ? duration((ready - started) * 1000) : "—"}</strong></div><div class="stat-row"><span>${t("采集器自身 RSS")}</span><strong>${size(S.overview.observer?.rss)}</strong></div><div class="stat-row"><span>${t("服务进程数")}</span><strong>${latest.processes?.length ?? "—"}</strong></div></div><div class="insight-breakdown"><div class="stat-row"><span>${t("匿名驻留")}</span><strong>${size(m.anon)}</strong></div><div class="stat-row"><span>${t("文件缓存")}</span><strong>${size(m.file)}</strong></div></div><div class="insight-foot">${t("启动增量是线索，不是插件当前独占内存。")} <button data-go="guide" class="text-button">${t("了解口径")} ↗</button></div>`;
+  $("top-plugins").innerHTML = pluginTable(
+    sortedRows(measured).slice(0, 5),
+    true,
+  );
+  $("processes").innerHTML = processTable(latest.processes || []);
+  chart.set(S.trend.samples || [], S.metric, S.zero);
+  $("trend-note").textContent =
+    (S.trend.downsampled
+      ? t("长时间范围保留峰谷显示；统计基于显示点。")
+      : t("自动适应纵轴，避免启动尖峰压平日常波动。")) +
+    " " +
+    (S.trend.samples?.length || 0) +
+    " " +
+    t("个显示点");
+}
+function processTable(items) {
+  if (!items.length)
+    return empty(t("暂无进程明细"), t("后端将在下一次采样时更新。"));
+  return `<div class="table-wrap"><table><thead><tr><th>${t("进程 / 启动关联")}</th><th>RSS</th><th>PSS</th><th>Swap</th></tr></thead><tbody>${items.map((p) => `<tr><td>${esc(p.name || "process")} <small>#${esc(p.pid)}</small><span class="sub" title="${esc(p.startup_owner || "")}">${esc(p.startup_owner || t("未发现插件启动关联"))}</span></td><td class="mono num">${size(p.rss)}</td><td class="mono num" title="${t("明细采样于")} ${stamp(p.detailed_at, true)}">${size(p.pss)}</td><td class="mono num">${size(p.swap)}</td></tr>`).join("")}</tbody></table></div>`;
 }
 
-/* ------------------------------------------------------------ banner/help */
-
-function renderBanner() {
-  const banner = el("banner");
-  if (!banner) return;
-  const notes = (state.report && state.report.notes) || [];
-  const quiet = { census_never_run: 1, dep_audit_never_run: 1, retained_never_run: 1 };
-  const important = notes.filter(function (note) { return !quiet[note]; });
-  const shown = important.length ? important : notes.slice(0, 1);
-  if (!shown.length) {
-    banner.hidden = true;
-    return;
-  }
-  const level = shown.some(function (note) {
-    return /truncated|degraded|missing|unavailable|partial/.test(note);
-  }) ? "warn" : "info";
-  banner.hidden = false;
-  banner.dataset.level = level;
-  const title = el("banner-title");
-  if (title) title.textContent = level === "warn" ? t("banner.attention", "需要注意") : t("banner.note", "测量说明");
-  const text = el("banner-text");
-  if (text) {
-    text.textContent = shown.slice(0, 3).map(function (note) {
-      return t("note." + note, NOTE_FALLBACK[note] || note);
-    }).join(" ");
-  }
+function pluginTable(items, compact = false) {
+  if (!items.length)
+    return empty(
+      t("没有匹配的插件"),
+      S.search
+        ? t("试试清空搜索或切换筛选条件。")
+        : t("插件清单通常每分钟同步；未接入启动探针时，启动增量会保持未知。"),
+    );
+  const max = Math.max(...items.map((p) => Math.abs(p.delta || 0)), 1);
+  return `<div class="table-wrap"><table><thead><tr><th>${t("插件")}</th>${compact ? "" : `<th>${t("状态")}</th>`}<th>${t("启动增量")} <small>RSS + Swap</small></th><th>${t("加载耗时")}</th>${compact ? "" : `<th>${t("证据")}</th>`}</tr></thead><tbody>${items.map((p) => `<tr><td><button class="plugin-link" data-plugin="${esc(p.id)}" title="${esc(p.label)}">${esc(p.label)}</button><span class="sub" title="${esc(p.id)}">${esc(p.id)}</span></td>${compact ? "" : `<td>${tag(p.failed ? t("加载失败") : p.activated === true ? t("已启用") : p.activated === false ? t("已停用") : t("未同步"), p.failed ? "bad" : p.activated !== true ? "neutral" : "")}</td>`}<td class="bar-cell mono num">${signedSize(p.delta)}${p.partial ? " *" : ""}${finite(p.delta) ? `<svg class="mini-track" width="120" height="3" viewBox="0 0 120 3" aria-hidden="true"><rect width="${(Math.abs(p.delta) / max) * 120}" height="3" fill="var(--accent)"/></svg>` : ""}</td><td class="mono num">${duration(p.duration)}</td>${compact ? "" : `<td>${p.phases.length ? tag(p.phases.length + " " + t("阶段")) : tag(t("未测量"), "neutral")}</td>`}</tr>`).join("")}</tbody></table></div>`;
 }
-
-function renderHelp() {
-  const node = el("help-list");
-  if (node) {
-    const items = [
-      ["footprint", "help.footprint", "内存足迹"],
-      ["rss", "help.rss", "常驻 RSS"],
-      ["retained", "help.retained", "引用图保留"],
-      ["import", "help.import", "导入成本"],
-      ["census", "help.census", "对象普查"],
-      ["trend", "help.trend", "增长趋势"],
-      ["cgroup", "help.cgroup", "容器额度"],
-    ];
-    node.innerHTML = items.map(function (item) {
-      return '<div class="help-item"><dt>' + esc(t("help.label." + item[0], item[2])) + "</dt>"
-        + "<dd>" + esc(t(item[1], "暂无说明")) + "</dd></div>";
-    }).join("");
+function renderPlugins(build) {
+  if (build) {
+    $("content").innerHTML =
+      `<div class="toolbar"><label class="sr-only" for="plugin-search">${t("搜索插件")}</label><input id="plugin-search" type="search" placeholder="${t("搜索插件名称或目录…")}" value="${esc(S.search)}"><div class="inline"><span id="plugin-count" class="muted"></span><label class="sr-only" for="plugin-filter">${t("插件筛选")}</label><select id="plugin-filter">${[
+        ["all", "全部状态"],
+        ["on", "已启用"],
+        ["off", "已停用"],
+        ["unmeasured", "未测量"],
+      ]
+        .map(
+          ([v, l]) =>
+            `<option value="${v}" ${S.filter === v ? "selected" : ""}>${t(l)}</option>`,
+        )
+        .join(
+          "",
+        )}</select><label class="sr-only" for="plugin-sort">${t("排序")}</label><select id="plugin-sort">${[
+        ["delta", "按启动增量"],
+        ["duration", "按加载耗时"],
+        ["name", "按名称"],
+      ]
+        .map(
+          ([v, l]) =>
+            `<option value="${v}" ${S.sort === v ? "selected" : ""}>${t(l)}</option>`,
+        )
+        .join(
+          "",
+        )}</select></div></div><section class="card"><div id="plugin-table"></div></section><div class="toolbar section-gap"><span class="data-note">${t("— 表示未测到；* 表示只包含部分阶段。增量不能当作当前占用。")}</span><div id="plugin-pager" class="inline"></div></div>`;
+    $("plugin-search").oninput = (e) => {
+      S.search = e.target.value;
+      S.page = 0;
+      renderPlugins(false);
+    };
+    $("plugin-filter").onchange = (e) => {
+      S.filter = e.target.value;
+      S.page = 0;
+      renderPlugins(false);
+    };
+    $("plugin-sort").onchange = (e) => {
+      S.sort = e.target.value;
+      S.page = 0;
+      renderPlugins(false);
+    };
   }
-  const safety = el("safety-list");
-  if (safety) {
-    const items = ["noTracemalloc", "cheapProbes", "keepCensusOff", "watchSwap", "useRssAlert", "runDeepManually"];
-    safety.innerHTML = items.map(function (key) {
-      return "<li>" + esc(t("help.safety." + key, "—")) + "</li>";
-    }).join("");
-  }
+  const all = rows(),
+    filtered = sortedRows(all, S.sort, S.search, S.filter);
+  S.page = Math.min(S.page, Math.max(0, Math.ceil(filtered.length / 30) - 1));
+  $("plugin-count").textContent = filtered.length + " / " + all.length;
+  $("plugin-table").innerHTML = pluginTable(
+    filtered.slice(S.page * 30, (S.page + 1) * 30),
+  );
+  $("plugin-pager").innerHTML = pager("plugin", S.page, filtered.length, 30);
 }
-
-/* ------------------------------------------------------------- orchestration */
-
-function renderAll() {
-  applyStaticText();
-  renderBanner();
-  renderHero();
-  renderMetrics();
-  renderTrend();
-  renderTopBars();
-  renderProbeStatus();
-  renderAttribution();
-  renderBreakdown();
-  renderTable();
-  renderImports();
-  renderAudit();
-  renderCensus();
-  renderAlerts();
-  renderHelp();
-  if (state.drawerPayload) renderDetail(state.drawerPayload);
+function pager(name, page, total, limit) {
+  return total > limit
+    ? `<button data-page="${name}" data-step="-1" ${page === 0 ? "disabled" : ""}>${t("上一页")}</button><small>${page + 1} / ${Math.ceil(total / limit)}</small><button data-page="${name}" data-step="1" ${(page + 1) * limit >= total ? "disabled" : ""}>${t("下一页")}</button>`
+    : "";
 }
-
-function setReport(report) {
-  if (!report || typeof report !== "object") return;
-  state.report = report;
+function runOptions() {
+  return S.runs
+    .map(
+      (run) =>
+        `<option value="${esc(run.id)}" ${S.runId === run.id ? "selected" : ""}>${esc(stamp(run.started_at, true))} · PID ${esc(run.pid)}${run.id === S.overview.run?.id ? " · " + t("当前") : ""}</option>`,
+    )
+    .join("");
 }
-
-async function refresh(options) {
-  if (state.tab === "observer") {
-    if (window.MemoryScopeObserver) await window.MemoryScopeObserver.refresh();
-    return;
-  }
-  const opts = options || {};
-  if (state.busy && !opts.allowBusy) return;
-  setAction("refresh");
+async function selectRun(id) {
+  S.runId = id;
+  S.historyReport = null;
+  renderStartup(true);
   try {
-    // A normal refresh must stay cheap: one /proc read plus cached probe
-    // results.  The expensive one-off probes are explicit buttons, and the
-    // backend keeps their last result so the panels stay populated.
-    const params = { sample: "0", census: "0", audit: "0" };
-    if (opts.deep) params.deep = "1";
-    setReport(await apiGet("plugins", params));
-    const rest = await Promise.all([
-      apiGet("overview"),
-      apiGet("history", { limit: 120 }),
-      apiGet("alerts", { limit: ALERT_LIMIT }),
+    const report = await api("run", { id, samples: 0 });
+    if (S.runId === id) {
+      S.historyReport = report;
+      if (S.tab === "startup") renderStartup(false);
+    }
+  } catch (e) {
+    toast(e.message);
+    if (S.tab === "startup" && S.runId === id)
+      $("startup-data").innerHTML = empty(t("读取启动记录失败"), e.message);
+  }
+}
+function renderStartup(build) {
+  if (S.mode === "local") {
+    $("content").innerHTML =
+      `<div class="card">${empty(t("需要连接独立后端"), t("本地导入统计只覆盖本插件加载之后；完整启动记录需要早期探针。"))}</div>`;
+    return;
+  }
+  if (build) {
+    $("content").innerHTML =
+      `<div class="toolbar"><div class="inline"><label for="run-select">${t("启动批次")}</label><select id="run-select">${runOptions()}</select></div><span class="muted">${S.runs.length} ${t("个保留批次")}</span></div><div id="startup-data"></div>`;
+    $("run-select").value = S.runId || S.overview.run?.id || "";
+    $("run-select").onchange = (e) => selectRun(e.target.value);
+  }
+  const report =
+    S.runId && S.runId !== S.overview.run?.id ? S.historyReport : S.report;
+  if (!report) {
+    $("startup-data").innerHTML = `<div class="loading">${t("loading")}</div>`;
+    return;
+  }
+  const phases = report.phases || [],
+    run = report.run || {};
+  const content = `<div class="metrics">${metric(t("就绪耗时"), finite(run.ready_at) ? Number((run.ready_at - run.started_at).toFixed(2)) : null, t("从进程出现到服务就绪"), "s", "clock")}${metric(t("已记录阶段"), phases.length, t("导入 / 构造 / 初始化"), "", "activity")}${metric(t("涉及插件"), new Set(phases.map((p) => p.plugin)).size, t("有阶段记录的插件"), "", "plugins")}${metric(t("首次出现依赖"), report.packages?.length ?? null, t("共享依赖不重复分摊"), "", "box")}</div><div class="notice">${report.probe_complete ? t("探针记录完整。时间段增量仍可能混入并发工作。") : t("探针记录不完整或未启用；没有测到的值保持未知。")} ${t("启动时间")}: ${stamp(run.started_at, true)}</div><section class="card">${cardHead(t("逐插件加载阶段"), t("按实际发生顺序排列；点击插件查看完整证据。"))}<div class="card-body toolbar"><label class="sr-only" for="phase-search">${t("搜索插件")}</label><input id="phase-search" type="search" placeholder="${t("搜索插件名称或目录…")}" value="${esc(S.phaseSearch)}"><label class="sr-only" for="phase-filter">${t("阶段筛选")}</label><select id="phase-filter">${["all", "import", "construct", "initialize", "startup_window"].map((v) => `<option value="${v}" ${S.phase === v ? "selected" : ""}>${v === "all" ? t("全部阶段") : phaseName(v)}</option>`).join("")}</select></div><div id="phase-table"></div><div class="card-body row-between section-gap"><small>${t("窗口增量不是独占内存，负值表示该时段总量下降。")}</small><div id="phase-pager" class="inline"></div></div></section><section class="card section-gap">${cardHead(t("共享依赖首次出现"), t("首次导入者不等于唯一使用者；不为共享包虚构占用大小。"))}<div class="card-body package-list">${
+    (report.packages || [])
+      .map(
+        (p) => `<span title="${esc(p.first_importer)}">${esc(p.name)}</span>`,
+      )
+      .join("") || t("未记录")
+  }</div></section>`;
+  if (build || !$("phase-table")) {
+    $("startup-data").innerHTML = content;
+    $("phase-search").oninput = (e) => {
+      S.phaseSearch = e.target.value;
+      S.phasePage = 0;
+      renderPhases(
+        S.runId && S.runId !== S.overview.run?.id ? S.historyReport : S.report,
+      );
+    };
+    $("phase-filter").onchange = (e) => {
+      S.phase = e.target.value;
+      S.phasePage = 0;
+      renderPhases(
+        S.runId && S.runId !== S.overview.run?.id ? S.historyReport : S.report,
+      );
+    };
+  }
+  if (!build && $("phase-table")) {
+    const latest = document.createElement("template");
+    latest.innerHTML = content;
+    for (const selector of [".metrics", ".notice", ".package-list"]) {
+      const target = $("startup-data").querySelector(selector);
+      const updated = latest.content.querySelector(selector);
+      if (target && updated) target.innerHTML = updated.innerHTML;
+    }
+    const select = $("run-select");
+    if (document.activeElement !== select) {
+      select.innerHTML = runOptions();
+      select.value = S.runId || S.overview.run?.id || "";
+    }
+  }
+  renderPhases(report);
+}
+function renderPhases(report) {
+  const phases = (report?.phases || []).filter(
+    (p) =>
+      (S.phase === "all" || p.phase === S.phase) &&
+      p.plugin.toLowerCase().includes(S.phaseSearch.toLowerCase()),
+  );
+  S.phasePage = Math.min(
+    S.phasePage,
+    Math.max(0, Math.ceil(phases.length / 30) - 1),
+  );
+  $("phase-table").innerHTML = phases.length
+    ? `<div class="table-wrap"><table><thead><tr>${["插件 / 阶段", "开始时间", "耗时", "主进程增量", "服务窗口增量"].map((v) => `<th>${t(v)}</th>`).join("")}</tr></thead><tbody>${phases
+        .slice(S.phasePage * 30, (S.phasePage + 1) * 30)
+        .map(
+          (p) =>
+            `<tr><td><button class="plugin-link" data-history-plugin="${esc(p.plugin)}">${esc(p.plugin)}</button>${tag(phaseName(p.phase), p.failed ? "bad" : "neutral")}</td><td class="mono num">${stamp(p.start)}</td><td class="mono num">${duration(p.duration_ms)}</td><td class="mono num">${signedSize(p.process_rss_swap_delta)}</td><td class="mono num">${signedSize(p.service_anon_swap_delta)}</td></tr>`,
+        )
+        .join("")}</tbody></table></div>`
+    : empty(
+        t("没有匹配的阶段"),
+        t("未启用早期探针的批次，可能只有粗略日志窗口或没有记录。"),
+      );
+  $("phase-pager").innerHTML = pager("phase", S.phasePage, phases.length, 30);
+}
+async function loadDiagnostics(force = false) {
+  if (!embedded || (localLoaded && !force)) return;
+  try {
+    const [report, alerts] = await Promise.all([
+      api("plugins", { sample: 0, census: 0, audit: 0, deep: 0 }, "GET", true),
+      api("alerts", { limit: 30 }, "GET", true),
     ]);
-    state.overview = rest[0] || null;
-    state.history = rest[1] || null;
-    state.alerts = (rest[2] && rest[2].alerts) || [];
-    state.alertsEnabled = Boolean(rest[2] && rest[2].enabled);
-    renderAll();
-    if (!opts.silent) {
-      toast(opts.deep ? t("toast.deepDone", "引用图扫描完成") : t("toast.refreshed", "已刷新"));
-    }
-  } catch (error) {
-    toast(errorText(error), "error");
-  } finally {
-    setAction(null);
+    S.local = report;
+    S.alerts = alerts.alerts || [];
+    localLoaded = true;
+    if (S.tab === "diagnostics") renderDiagnostics(true);
+  } catch (e) {
+    toast(t("本地诊断读取失败") + ": " + e.message);
+    if (S.tab === "diagnostics")
+      $("diagnostic-results").innerHTML = empty(
+        t("本地诊断读取失败"),
+        e.message,
+      );
   }
 }
-
-/* ---------------------------------------------------------------- actions */
-
-async function runCensus() {
-  if (typeof window.confirm === "function"
-    && !window.confirm(t("confirm.census", "对象普查会遍历整个 GC 对象列表，可能造成短暂停顿，并把换出的页面读回内存。继续吗？"))) return;
-  setAction("census");
-  try {
-    await apiPost("census", {});
-    toast(t("toast.censusDone", "对象普查完成"));
-    gotoTab("census");
-    await refresh({ silent: true, allowBusy: true });
-  } catch (error) {
-    toast(errorText(error), "error");
-  } finally {
-    setAction(null);
-  }
+function renderDiagnostics(build) {
+  if (!build) return;
+  const tools = [
+    [
+      "audit",
+      "依赖审计",
+      "读取插件源码，找出可能在加载时引入的重依赖。不会扫描对象堆。",
+      "box",
+    ],
+    [
+      "census",
+      "对象普查",
+      "估算 Python 对象的归属。可能引起短暂停顿和换入，不覆盖所有原生库内存。",
+      "scan",
+    ],
+    [
+      "deep",
+      "引用图扫描",
+      "沿插件引用查找持有对象，区分独有与共享引用。会消耗 CPU，建议空闲时使用。",
+      "plugins",
+    ],
+  ];
+  $("content").innerHTML =
+    `${!embedded ? `<div class="notice">${t("独立页面无法访问进程内对象。请在 AstrBot 的 MemoryScope 插件页执行诊断。")}</div>` : ""}<div class="diagnostic-grid">${tools.map(([id, label, desc, sym]) => `<section class="card tool-card"><div class="tool-icon">${icon(sym)}</div><h2>${t(label)}</h2><p>${t(desc)}</p><span class="tool-status">${S.local[id === "audit" ? "audit_meta" : id === "census" ? "census_meta" : "deep_meta"]?.generated_at ? stamp(S.local[id === "audit" ? "audit_meta" : id === "census" ? "census_meta" : "deep_meta"].generated_at, true) : t("按需执行")}</span><button data-scan="${id}" ${!embedded || S.scanBusy ? "disabled" : ""}>${t("运行一次")}</button></section>`).join("")}</div><section class="card">${cardHead(t("诊断结果"), t("这里的对象估算不能与启动增量或 RSS 相加。"))}<div id="diagnostic-results"></div></section><div class="two-col section-gap"><section class="card">${cardHead(t("本地告警记录"), t("连接后端时不持续运行本地扫描，这不是服务器告警流。"))}<div class="card-body">${S.alerts.length ? S.alerts.map((a) => `<div class="job"><small>${stamp(a.ts, true)}</small><p>${esc(a.message)}</p></div>`).join("") : empty(t("暂无本地告警"))}</div></section><section class="card">${cardHead(t("进程维护"), t("GC 不保证降低 RSS；仅在排查问题时按需使用。"))}<div class="card-body"><button data-scan="gc" ${!embedded || S.scanBusy ? "disabled" : ""}>${t("运行垃圾回收")}</button>${note(t("导出报告可以保存当前证据，文件不包含连接凭据。"))}<button data-export class="quiet">${t("export")}</button></div></section></div>`;
+  renderDiagnosticResult();
 }
-
-async function runAudit() {
-  setAction("audit");
-  try {
-    await apiPost("audit", {});
-    toast(t("toast.auditDone", "依赖审计完成"));
-    gotoTab("audit");
-    await refresh({ silent: true, allowBusy: true });
-  } catch (error) {
-    toast(errorText(error), "error");
-  } finally {
-    setAction(null);
-  }
-}
-
-async function runDeep() {
-  if (typeof window.confirm === "function"
-    && !window.confirm(t("confirm.deep", "引用图扫描会遍历插件可达对象，通常几秒内完成，期间会占用一点 CPU。继续吗？"))) return;
-  await refresh({ deep: true });
-}
-
-async function forceGc() {
-  setAction("gc");
-  try {
-    const result = await apiPost("gc", {});
-    toast(t("toast.gcDone", "GC 完成") + " · " + fmtCount(result && result.collected)
-      + " · " + fmtBytes(result && result.rss_before) + " → " + fmtBytes(result && result.rss_after));
-    await refresh({ silent: true, allowBusy: true });
-  } catch (error) {
-    toast(errorText(error), "error");
-  } finally {
-    setAction(null);
-  }
-}
-
-async function setBaseline(action) {
-  setAction("baseline");
-  try {
-    await apiPost("baseline", { action: action });
-    toast(action === "clear" ? t("toast.baselineCleared", "已清除基线") : t("toast.baselineSet", "已设为基线"));
-    await refresh({ silent: true, allowBusy: true });
-  } catch (error) {
-    toast(errorText(error), "error");
-  } finally {
-    setAction(null);
-  }
-}
-
-/* ----------------------------------------------------------------- drawer */
-
-function closeDrawer() {
-  state.drawerName = null;
-  state.drawerPayload = null;
-  const drawer = el("drawer");
-  if (drawer) drawer.hidden = true;
-}
-
-function detailSection(title, content) {
-  return '<section class="detail-section"><h3>' + esc(title) + "</h3>" + content + "</section>";
-}
-
-function monoRow(left, middle, right) {
-  return '<div class="mono-row"><span>' + left + "</span><span>" + esc(middle) + "</span><span>"
-    + esc(right || "") + "</span></div>";
-}
-
-function renderDetail(payload) {
-  const drawer = el("drawer");
-  const node = el("drawer-content");
-  if (!drawer || !node || !payload) return;
-  const detail = payload.detail || payload;
-  if (!detail.found) {
-    node.innerHTML = '<div class="empty">' + esc(t("detail.notFound", "找不到这个插件")) + "</div>";
+function renderDiagnosticResult() {
+  if (!$("diagnostic-results")) return;
+  const data = S.local,
+    meta = [data.census_meta, data.audit_meta, data.deep_meta].filter(
+      (m) => m?.generated_at,
+    ),
+    measured = (data.plugins || []).filter(
+      (p) => p.census_measured || p.retained || p.audit_measured,
+    );
+  if (!meta.length && !measured.length) {
+    $("diagnostic-results").innerHTML = empty(
+      t("尚未运行诊断"),
+      t("选择上方工具运行一次。未测量不代表插件占用为零。"),
+    );
     return;
   }
-  const row = detail.row || {};
-  const importInfo = detail.import;
-  const census = detail.census;
-  const retained = row.retained;
-  const audit = detail.audit;
-  const packages = detail.import_packages || [];
-
-  const retainedContent = retained
-    ? '<div class="detail-grid">'
-      + kv(t("detail.retainedTotal", "分摊后合计"), fmtBytes(retained.total_bytes))
-      + kv(t("detail.exclusive", "仅此插件可达"), fmtBytes(retained.exclusive_bytes))
-      + kv(t("detail.shared", "与其他插件共享"), fmtBytes(retained.shared_bytes))
-      + kv(t("detail.sharedFull", "共享对象原始大小"), fmtBytes(retained.shared_full_bytes))
-      + kv(t("detail.retainedObjects", "对象数"),
-        fmtCount((num(retained.exclusive_objects) || 0) + (num(retained.shared_objects) || 0)))
-      + kv(t("detail.scanned", "本轮扫描对象"), fmtCount(retained.scanned_objects))
-      + "</div>"
-      + '<p class="muted">' + esc(t("detail.sharedNote", "共享对象按共用它的插件数量均摊，所以各插件之和不会超过真实占用。")) + "</p>"
-      + (retained.truncated
-        ? '<p class="callout callout-warn">' + esc(t("detail.truncated", "扫描在配额上限处截断，数值是下界。")) + "</p>"
-        : "")
-    : '<p class="muted-block">' + esc(t("detail.retainedMissing", "还没扫到这个插件；后台是轮转配额，等几轮或手动点“引用图扫描”。")) + "</p>";
-
-  const importContent = importInfo
-    ? '<div class="detail-grid">'
-      + kv(t("detail.total", "总成本"), fmtBytes(importInfo.bytes))
-      + kv(t("detail.self", "自身模块"), fmtBytes(importInfo.self_bytes))
-      + kv(t("detail.wall", "耗时"), fmtMs(importInfo.wall_ms))
-      + kv(t("detail.modules", "模块"), fmtCount(importInfo.modules))
-      + "</div>"
-    : '<p class="muted-block">' + esc(t("detail.importMissing", "这个插件在钩子安装之前就加载完了，导入成本未知。")) + "</p>";
-
-  const censusContent = census
-    ? '<div class="detail-grid">'
-      + kv(t("detail.bytes", "浅层大小"), fmtBytes(census.bytes))
-      + kv(t("detail.objects", "对象数"), fmtCount(census.objects))
-      + kv(t("detail.types", "类型数"), fmtCount(census.type_count))
-      + "</div>"
-      + '<div class="mono-list">' + (census.types || []).slice(0, 12).map(function (item) {
-        return monoRow(esc(item.type), fmtBytes(item.bytes), fmtCount(item.objects));
-      }).join("") + "</div>"
-    : '<p class="muted-block">' + esc(t("detail.censusMissing", "尚未对这个进程运行对象普查。")) + "</p>";
-
-  const packageContent = packages.length
-    ? '<div class="mono-list">' + packages.slice(0, 20).map(function (item) {
-      return monoRow(esc(item.name), fmtBytes(item.bytes), fmtMs(item.wall_ms));
-    }).join("") + "</div>"
-    : '<p class="muted-block">' + esc(t("detail.packagesEmpty", "没有记录到由它首次加载的第三方包。")) + "</p>";
-
-  const auditImports = (audit && audit.imports) || [];
-  const auditContent = audit
-    ? (auditImports.length
-      ? '<div class="mono-list">' + auditImports.map(function (item) {
-        return monoRow(esc(item.module) + " <small>" + esc(item.file) + ":" + esc(item.lineno) + "</small>",
-          fmtBytes(item.cost_bytes), item.guarded ? t("audit.guardedShort", "可选") : "");
-      }).join("") + "</div>"
-      : '<p class="muted-block">' + esc(t("detail.auditEmpty", "没有识别到重依赖。")) + "</p>")
-    : '<p class="muted-block">' + esc(t("detail.auditMissing", "尚未建立依赖审计结果。")) + "</p>";
-
-  const header = el("drawer-title");
-  if (header) {
-    header.textContent = row.display_name || detail.name;
-    header.title = t("detail.copyHint", "点击标题复制这份 JSON");
-  }
-
-  node.innerHTML = '<div class="detail-meta">' + esc(detail.name) + " · " + esc(row.version || "—")
-      + " · " + esc(row.author || "—") + "</div>"
-    + detailSection(t("detail.retainedTitle", "引用图保留量"), retainedContent)
-    + detailSection(t("detail.historyTitle", "历史曲线"),
-      '<div class="chart chart-small" id="detail-chart"></div>'
-      + '<p class="muted">' + esc(t("detail.historyLegend", "粉线：对象普查浅层大小 · 蓝线：引用图保留量")) + "</p>")
-    + detailSection(t("detail.importTitle", "加载期导入成本"), importContent)
-    + detailSection(t("detail.censusTitle", "对象普查"), censusContent)
-    + detailSection(t("detail.packageTitle", "由它首次加载的第三方包"), packageContent)
-    + detailSection(t("detail.auditTitle", "顶层依赖审计"), auditContent)
-    + '<p class="muted">' + esc(t("detail.submodules", "已加载子模块")) + ": "
-      + esc((detail.submodules || []).slice(0, 20).join(", ") || "—") + "</p>";
-
-  renderMiniChart(el("detail-chart"), detail.series, detail.retained_series);
+  $("diagnostic-results").innerHTML =
+    `<div class="scan-result"><p>${t("最近结果")}: ${stamp(data.generated_at, true)} · ${t("具体覆盖范围见原始证据")}</p></div><div class="table-wrap"><table><thead><tr><th>${t("插件")}</th><th>${t("对象普查")}</th><th>${t("引用图估算")}</th><th>${t("依赖线索")}</th></tr></thead><tbody>${measured
+      .map(
+        (p) =>
+          `<tr><td>${esc(p.display_name || p.name)}</td><td class="mono">${p.census_measured ? size(p.census_bytes) : "—"}</td><td class="mono">${size(p.retained?.total_bytes ?? p.retained_bytes)}</td><td>${p.audit_measured ? esc(p.audit_findings) : "—"}</td></tr>`,
+      )
+      .join(
+        "",
+      )}</tbody></table></div><div class="card-body">${rawDetails({ census: data.census_meta, deep: data.deep_meta, audit: data.audit_meta, opportunities: data.opportunities, notes: data.notes })}</div>`;
 }
-
-async function openDetail(name) {
-  const drawer = el("drawer");
-  const node = el("drawer-content");
-  if (!drawer || !node) return;
-  state.drawerName = name;
-  state.drawerPayload = null;
-  drawer.hidden = false;
-  node.innerHTML = '<div class="empty">' + esc(t("status.loading", "加载中…")) + "</div>";
-  try {
-    const payload = await apiGet("detail", { name: name, deep: "0", census: "0", audit: "0" });
-    if (state.drawerName !== name) return;
-    state.drawerPayload = payload;
-    renderDetail(payload);
-  } catch (error) {
-    if (state.drawerName === name) {
-      node.innerHTML = '<div class="callout callout-warn">' + esc(errorText(error)) + "</div>";
-    }
-  }
+async function confirmAction(title, message) {
+  $("confirm-title").textContent = title;
+  $("confirm-text").textContent = message;
+  const dialog = $("confirm");
+  dialog.returnValue = "cancel";
+  dialog.showModal();
+  return new Promise((resolve) =>
+    dialog.addEventListener(
+      "close",
+      () => resolve(dialog.returnValue === "confirm"),
+      { once: true },
+    ),
+  );
 }
-
-async function copyDetail() {
-  if (!state.drawerPayload) return;
-  const text = JSON.stringify(state.drawerPayload.detail || state.drawerPayload, null, 2);
-  try {
-    await navigator.clipboard.writeText(text);
-    toast(t("toast.copied", "已复制"));
-  } catch (_error) {
-    toast(t("toast.copyFailed", "复制失败"), "error");
-  }
-}
-
-/* ------------------------------------------------------------------ events */
-
-function debounce(fn, wait) {
-  let timer = null;
-  return function () {
-    if (timer) window.clearTimeout(timer);
-    timer = window.setTimeout(function () {
-      timer = null;
-      fn();
-    }, wait);
+async function scan(name) {
+  if (S.scanBusy || !embedded) return;
+  const descriptions = {
+    audit: "依赖审计只读取源码，可能短时使用 CPU。",
+    census:
+      "对象普查可能暂停消息处理并引起内存换入。它不会得到精确的逐插件 RSS。",
+    deep: "引用图扫描会分片处理对象，但仍会消耗 CPU 并触碰内存。建议在空闲时执行。",
+    gc: "垃圾回收可能引起短暂停顿，并不保证内存数字下降。",
   };
-}
-
-function gotoTab(name) {
-  setTab(name);
-  // The trend SVG is sized from clientWidth, which is 0 while the panel is
-  // display:none.  Re-render once the browser has laid the panel out.
-  if (state.tab === "overview") window.requestAnimationFrame(renderTrend);
-}
-
-function stopAuto() {
-  if (state.autoTimer) window.clearInterval(state.autoTimer);
-  state.autoTimer = null;
-}
-
-function startAuto() {
-  stopAuto();
-  if (!state.auto) return;
-  state.autoTimer = window.setInterval(function () {
-    if (!document.hidden && !state.busy) refresh({ silent: true });
-  }, state.auto * 1000);
-}
-
-function bindEvents() {
-  for (const button of document.querySelectorAll(".nav-btn")) {
-    button.addEventListener("click", function () { gotoTab(button.dataset.tab); });
-  }
-
-  const on = function (id, event, handler) {
-    const node = el(id);
-    if (node) node.addEventListener(event, handler);
-  };
-
-  on("btn-refresh", "click", function () { refresh({}); });
-  on("btn-deep", "click", runDeep);
-  on("btn-census", "click", runCensus);
-  on("btn-audit", "click", runAudit);
-  on("btn-baseline-set", "click", function () { setBaseline("set"); });
-  on("btn-baseline-clear", "click", function () { setBaseline("clear"); });
-  on("btn-gc", "click", forceGc);
-  on("drawer-close", "click", closeDrawer);
-  on("drawer-title", "click", copyDetail);
-  on("drawer", "click", function (event) {
-    if (event.target.closest("[data-close]")) closeDrawer();
-  });
-
-  on("plugin-head", "click", function (event) {
-    const cell = event.target.closest("th[data-sort]");
-    if (!cell) return;
-    const key = cell.dataset.sort;
-    if (state.sortKey === key) state.sortDir = state.sortDir === "desc" ? "asc" : "desc";
+  if (!(await confirmAction(t("执行进程内诊断"), t(descriptions[name]))))
+    return;
+  S.scanBusy = true;
+  renderDiagnostics(true);
+  toast(t("正在运行诊断，请稍候…"));
+  try {
+    const result = await api(name, {}, "POST", true);
+    if (name === "gc") toast(t("垃圾回收已完成"));
     else {
-      state.sortKey = key;
-      state.sortDir = key === "name" ? "asc" : "desc";
+      S.local = { ...S.local, ...result };
+      toast(t("诊断完成"));
     }
-    writeStore(STORE_SORT, state.sortKey + ":" + state.sortDir);
-    renderTable();
-  });
-
-  const openRow = function (event) {
-    const row = event.target.closest("tr[data-name]");
-    if (row) openDetail(row.dataset.name);
-  };
-  on("plugin-body", "click", openRow);
-  on("import-plugin-body", "click", openRow);
-  on("plugin-body", "keydown", function (event) {
-    if (event.key !== "Enter" && event.key !== " ") return;
-    const row = event.target.closest("tr[data-name]");
-    if (!row) return;
-    event.preventDefault();
-    openDetail(row.dataset.name);
-  });
-
-  let searchTimer = null;
-  on("search", "input", function (event) {
-    state.search = event.target.value || "";
-    if (searchTimer) window.clearTimeout(searchTimer);
-    searchTimer = window.setTimeout(renderTable, 120);
-  });
-
-  on("skin-select", "change", function (event) {
-    state.skin = SKIN_IDS.includes(event.target.value) ? event.target.value : "auto";
-    writeStore(STORE_SKIN, state.skin);
-    applySkin();
-  });
-
-  on("auto-select", "change", function (event) {
-    const value = Number(event.target.value);
-    state.auto = AUTO_INTERVALS.includes(value) ? value : 0;
-    writeStore(STORE_AUTO, String(state.auto));
-    startAuto();
-  });
-
-  document.addEventListener("keydown", function (event) {
-    const drawer = el("drawer");
-    if (event.key === "Escape" && drawer && !drawer.hidden) closeDrawer();
-  });
-  document.addEventListener("visibilitychange", function () {
-    if (!document.hidden && state.auto && !state.busy) refresh({ silent: true });
-  });
-  window.addEventListener("resize", debounce(function () {
-    if (state.tab === "overview") renderTrend();
-    if (state.drawerPayload) {
-      const detail = state.drawerPayload.detail || state.drawerPayload;
-      renderMiniChart(el("detail-chart"), detail.series, detail.retained_series);
-    }
-  }, 200));
-  window.addEventListener("beforeunload", stopAuto);
+    if (S.tab === "diagnostics") renderDiagnostics(true);
+  } catch (e) {
+    toast(e.message);
+  } finally {
+    S.scanBusy = false;
+    if (S.tab === "diagnostics") renderDiagnostics(true);
+  }
 }
 
-async function main() {
-  if (!bridge) {
-    document.body.textContent = "MemoryScope 需要在 AstrBot Dashboard 的插件页内打开。";
+function renderExperiments(build) {
+  if (S.mode !== "observer") {
+    $("content").innerHTML =
+      `<div class="card">${empty(t("需要连接独立后端"))}</div>`;
     return;
   }
-  if (typeof bridge.ready === "function") await bridge.ready();
-
-  state.skin = readStore(STORE_SKIN, "auto");
-  if (!SKIN_IDS.includes(state.skin)) state.skin = "auto";
-  state.auto = Number(readStore(STORE_AUTO, "0")) || 0;
-  if (!AUTO_INTERVALS.includes(state.auto)) state.auto = 0;
-  const savedSort = String(readStore(STORE_SORT, "retained:desc")).split(":");
-  if (SORT_KEYS.includes(savedSort[0])) {
-    state.sortKey = savedSort[0];
-    state.sortDir = savedSort[1] === "asc" ? "asc" : "desc";
+  const allowed = S.overview.config?.allow_experiments === true;
+  if (build) {
+    const candidates = (S.overview.run?.inventory || []).filter(
+      (p) =>
+        p.activated &&
+        !p.reserved &&
+        p.root_dir_name !== "astrbot_plugin_memory_scope",
+    );
+    $("content").innerHTML =
+      `<div class="two-col"><section class="card">${cardHead(t("创建对照实验"), t("A 正常启动 → B 临时排除 → A 恢复验证"))}<div class="card-body"><div class="timeline"><span>A · ${t("正常")}</span><span>B · ${t("排除")}</span><span>A · ${t("恢复")}</span></div><p class="data-note">${t("会真实重启 AstrBot，机器人会暂时离线。仅影响实验启动，不删除业务数据。")}</p>${!allowed ? `<div class="notice">${t("后端未开放重启实验，日常观察不需要开启。")}</div>` : ""}<form id="experiment-form"><div class="form-grid"><label class="field">${t("目标插件")}<select id="experiment-plugin" required><option value="">${t("选择插件")}</option>${candidates.map((p) => `<option value="${esc(p.root_dir_name)}">${esc(p.display_name || p.name || p.root_dir_name)}</option>`).join("")}</select></label><label class="field">${t("排除方式")}<select id="experiment-mode"><option value="skip">${t("跳过导入")}</option><option value="disable">${t("仅停用")}</option></select></label><label class="field">${t("实验轮数")}<select id="experiment-rounds"><option value="1">1 · ${t("重启 3 次")}</option><option value="2">2 · ${t("重启 5 次")}</option><option value="3">3 · ${t("重启 7 次")}</option></select></label></div><label class="checkline"><input id="experiment-ack" type="checkbox"><span>${t("我理解实验会多次重启 AstrBot，并已选择合适的时间。")}</span></label><button id="start-experiment" class="primary" disabled>${t("创建实验")}</button></form>${note(t("单轮仅是初步线索；多轮仍需尽量保持消息量和工作负载一致。"))}</div></section><section class="card experiment-history">${cardHead(t("实验记录"), t("任务由后端执行，关闭页面不会终止。"))}<div class="card-body" id="jobs"></div></section></div>`;
+    $("experiment-form").onchange = updateExperimentButton;
+    $("experiment-form").onsubmit = startExperiment;
   }
-
-  applyStaticText();
-  applySkin();
-  bindEvents();
-  gotoTab(readStore(STORE_TAB, "observer"));
-  renderHelp();
-
-  const contextHandler = function () {
-    applySkin();
-    applyStaticText();
-    renderAll();
-  };
-  try {
-    if (typeof bridge.onContext === "function") bridge.onContext(contextHandler);
-    else if (typeof bridge.onContextChange === "function") bridge.onContextChange(contextHandler);
-  } catch (_error) {
-    // Older Dashboard builds ship no context listener; the static skin is fine.
-  }
-
-  await refresh({ silent: true });
-  startAuto();
+  updateExperimentButton();
+  $("jobs").innerHTML = S.jobs.length
+    ? S.jobs
+        .map(
+          (j) =>
+            `<article class="job"><div class="row-between"><span class="mono">${esc(j.plugin || j.id)}</span>${tag(statusName(j.state), j.state === "failed" ? "bad" : j.state === "complete" ? "" : "neutral")}</div><small>${stamp(j.started_at, true)}</small>${j.result ? `<p>${t("条件收益")}: <strong>${signedSize(j.result.saving_bytes)}</strong></p><p>${esc(classification(j.result.classification))}</p>` : ""}${j.message ? `<p>${esc(j.message)}</p>` : ""}${["queued", "running", "restoring"].includes(j.state) ? `<button data-cancel-experiment>${t("取消并恢复")}</button>` : ""}${rawDetails(j)}</article>`,
+        )
+        .join("")
+    : empty(t("还没有对照实验"), t("日常查看无需创建实验。"));
 }
-
-main().catch(function (error) { toast(errorText(error), "error"); });
+function classification(name) {
+  return t(
+    {
+      single_trial: "单轮结果，仅供初步参考",
+      within_variation: "差异未超过自然波动",
+      environment_changed: "环境不同，不宜直接比较",
+      insufficient_data: "稳定窗口不足",
+      difference_observed: "检测到差异，请结合波动与环境判断",
+    }[name] ||
+      name ||
+      "未知",
+  );
+}
+function updateExperimentButton() {
+  if (!$("start-experiment")) return;
+  $("start-experiment").disabled = !(
+    S.overview.config?.allow_experiments &&
+    $("experiment-ack").checked &&
+    $("experiment-plugin").value &&
+    !S.jobs.some((j) => ["queued", "running", "restoring"].includes(j.state))
+  );
+}
+async function startExperiment(e) {
+  e.preventDefault();
+  const rounds = Number($("experiment-rounds").value),
+    plugin = $("experiment-plugin").value;
+  const message = `${plugin} · ${2 * rounds + 1} ${t("次重启。期间机器人会离线，结束后恢复正常启动。")}`;
+  if (!(await confirmAction(t("确认开始重启对照"), message))) return;
+  $("start-experiment").disabled = true;
+  try {
+    await api(
+      "start",
+      {
+        plugin,
+        rounds,
+        mode: $("experiment-mode").value,
+        confirm_restart: true,
+      },
+      "POST",
+    );
+    $("experiment-ack").checked = false;
+    toast(t("实验已交给后端执行"));
+    await refresh();
+  } catch (e) {
+    toast(e.message);
+    updateExperimentButton();
+  }
+}
+function renderGuide() {
+  const sections = [
+    [
+      "01 / SERVICE",
+      "先看服务整体",
+      "服务物理记账包括 AstrBot、其子进程和文件缓存。匿名内存 + Swap 包含换出量，不能理解为物理内存。",
+      "PSS 分摊进程间的共享页，不能再拆成每个 Python 插件的独占账单。",
+    ],
+    [
+      "02 / STARTUP",
+      "启动增量是线索",
+      "探针记录导入、构造、初始化的时间窗口。窗口内还有其他后台任务，共享库也可能被多个插件使用。",
+      "负增量表示该时间段总量下降。— 表示未采集或无法分辨，不能当作零。",
+    ],
+    [
+      "03 / DIAGNOSTICS",
+      "对象估算不是 RSS",
+      "普查主要看可追踪的 Python 对象；引用图扫描看插件仍持有的对象。原生库、共享引用与扫描预算都会影响覆盖。",
+      "不开扫描也能查看后端趋势、插件清单与启动记录。日常无需开启自动普查。",
+    ],
+    [
+      "04 / COMPARISON",
+      "对照验证实际收益",
+      "重复进行正常启动、临时排除、恢复验证，观察稳定窗口的差值与波动。机器人会在实验期间多次离线。",
+      "结果只适用于当时的插件组合和工作负载。多个插件的节省量不能直接相加。",
+    ],
+    [
+      "05 / READING",
+      "让曲线保持可读",
+      "日常选择 15 分钟或 1 小时；排查启动再选择本次启动。纵轴默认自适应，可切换从零开始。",
+      "悬停或点击查看时间与数值；电脑拖动放大区间，点击复位还原。方向键逐点查看，Escape 复位。断点不会被补成零。",
+    ],
+    [
+      "06 / CONNECTION",
+      "数据从哪里来",
+      "独立后端持续保存采样，插件只负责安全转发与展示。后端离线时显示错误或过期记录，不伪装成零占用。",
+      "仅本地模式无法回溯早于本插件的导入。进程内诊断需在 AstrBot 插件页执行，独立页用于观察与对照。",
+    ],
+  ];
+  $("content").innerHTML =
+    `<div class="guide-grid">${sections.map(([code, title, a, b]) => `<section class="card guide-card"><div class="eyebrow">${code}</div><h2>${t(title)}</h2><p>${t(a)}</p><p>${t(b)}</p></section>`).join("")}</div>`;
+}
+function openDetail(id, historical = false) {
+  const report = historical
+    ? S.runId && S.runId !== S.overview.run?.id
+      ? S.historyReport
+      : S.report
+    : S.report;
+  const source = historical
+    ? pluginRows({ run: report?.run || {} }, report || {})
+    : rows();
+  const row = source.find((r) => r.id === id);
+  if (!row) {
+    toast(t("这个批次没有该插件的详情"));
+    return;
+  }
+  drawerFocus = document.activeElement;
+  $("detail").innerHTML =
+    `<h1 id="detail-title">${esc(row.label)}</h1><p class="identity mono muted">${esc(row.id)}</p><p>${tag(row.activated === true ? t("已启用") : row.activated === false ? t("已停用") : t("未同步"), "neutral")} ${row.version ? tag(row.version, "neutral") : ""}</p><div class="metrics">${metric(t("启动窗口增量"), row.delta, t("RSS + Swap；非当前独占占用"))}${metric(t("加载耗时"), finite(row.duration) ? Number((row.duration / 1000).toFixed(3)) : null, t("该插件记录到的阶段合计"), "s", "clock")}</div><p class="data-note">${t("窗口增量可能含并发工作。共享依赖首次出现在这里，不代表只被这个插件使用。")}</p><h2>${t("阶段证据")}</h2>${row.phases.length ? `<div class="table-wrap"><table><thead><tr><th>${t("阶段")}</th><th>${t("耗时")}</th><th>RSS + Swap Δ</th></tr></thead><tbody>${row.phases.map((p) => `<tr><td>${phaseName(p.phase)} ${p.failed ? tag(t("失败"), "bad") : ""}</td><td class="mono">${duration(p.duration_ms)}</td><td class="mono num">${signedSize(p.process_rss_swap_delta)}</td></tr>`).join("")}</tbody></table></div>` : empty(t("没有启动阶段证据"), t("插件清单仍可见；需要早期探针才能记录完整导入。"))}<h2>${t("首次出现的依赖")}</h2><div class="package-list">${row.packages.map((p) => `<span>${esc(p.name)}</span>`).join("") || `<p class="muted">${t("未记录")}</p>`}</div><h2>${t("关联子进程")}</h2>${row.processes.length ? processTable(row.processes) : `<p class="muted">${t("未发现插件启动关联")}</p>`}${row.local ? `<h2>${t("本地诊断证据")}</h2>${rawDetails(row.local)}` : ""}${rawDetails({ phases: row.phases, packages: row.packages })}`;
+  $("drawer").hidden = false;
+  $("workspace").inert = true;
+  document.querySelector(".topbar").inert = true;
+  document.querySelector(".navrow").inert = true;
+  document.querySelector("footer").inert = true;
+  document.body.style.overflow = "hidden";
+  $("close-drawer").focus();
+}
+function closeDrawer() {
+  $("drawer").hidden = true;
+  $("workspace").inert = false;
+  document.querySelector(".topbar").inert = false;
+  document.querySelector(".navrow").inert = false;
+  document.querySelector("footer").inert = false;
+  document.body.style.overflow = "";
+  drawerFocus?.focus();
+}
+function exportReport() {
+  const blob = new Blob(
+    [
+      JSON.stringify(
+        {
+          exported_at: Date.now() / 1000,
+          source: S.mode,
+          overview: S.overview,
+          startup: S.report,
+          trend: S.trend,
+          selected_startup: S.historyReport,
+          diagnostics: S.local,
+          experiments: S.jobs,
+        },
+        null,
+        2,
+      ),
+    ],
+    { type: "application/json" },
+  );
+  const url = URL.createObjectURL(blob),
+    a = document.createElement("a");
+  a.href = url;
+  a.download =
+    "memoryscope-" + new Date().toISOString().replace(/[:.]/g, "-") + ".json";
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  toast(t("报告已导出"));
+}
+document.addEventListener("click", async (e) => {
+  const button = e.target.closest("button");
+  if (!button) return;
+  if (button.dataset.go) navigate(button.dataset.go);
+  if (button.dataset.plugin) openDetail(button.dataset.plugin);
+  if (button.dataset.historyPlugin)
+    openDetail(button.dataset.historyPlugin, true);
+  if (button.dataset.range !== undefined) {
+    S.range = Number(button.dataset.range);
+    document
+      .querySelectorAll("[data-range]")
+      .forEach((el) => el.setAttribute("aria-pressed", el === button));
+    chart?.reset();
+    await refresh();
+  }
+  if (button.dataset.page) {
+    const step = Number(button.dataset.step);
+    if (button.dataset.page === "plugin") {
+      S.page += step;
+      renderPlugins(false);
+    } else {
+      S.phasePage += step;
+      renderPhases(
+        S.runId && S.runId !== S.overview.run?.id ? S.historyReport : S.report,
+      );
+    }
+  }
+  if (button.dataset.scan) scan(button.dataset.scan);
+  if (button.hasAttribute("data-export")) exportReport();
+  if (
+    button.hasAttribute("data-cancel-experiment") &&
+    (await confirmAction(
+      t("取消并恢复"),
+      t("停止后续实验并恢复正常启动；可能需要再重启一次 AstrBot。"),
+    ))
+  ) {
+    try {
+      await api("cancel", {}, "POST");
+      await refresh();
+    } catch (error) {
+      toast(error.message);
+    }
+  }
+});
+$("close-drawer").onclick = closeDrawer;
+$("drawer").onclick = (e) => {
+  if (e.target === $("drawer")) closeDrawer();
+};
+document.addEventListener("keydown", (e) => {
+  if ($("drawer").hidden) return;
+  if (e.key === "Escape") closeDrawer();
+  if (e.key === "Tab") {
+    const items = [
+      ...$("drawer").querySelectorAll(
+        'button,a,input,select,summary,[tabindex="0"]',
+      ),
+    ].filter((el) => el.getClientRects().length);
+    const first = items[0],
+      last = items.at(-1);
+    if (e.shiftKey && document.activeElement === first) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && document.activeElement === last) {
+      e.preventDefault();
+      first.focus();
+    }
+  }
+});
+$("theme").onchange = (e) => {
+  theme(e.target.value);
+  save("theme", e.target.value);
+};
+$("locale").onchange = (e) => {
+  setLocale(e.target.value);
+  save("locale", e.target.value);
+  paintStatic();
+  render(true);
+};
+$("refresh").onclick = () => {
+  if (!S.mode && embedded) boot();
+  else {
+    refresh();
+    if (S.tab === "diagnostics") loadDiagnostics(true);
+  }
+};
+$("autorefresh").onchange = schedule;
+$("export").onclick = exportReport;
+window.addEventListener("hashchange", () => navigate(location.hash.slice(1)));
+$("auth").onsubmit = async (e) => {
+  e.preventDefault();
+  S.token = $("token").value.trim();
+  $("token").value = "";
+  S.mode = "observer";
+  await refresh();
+  if (S.overview) {
+    $("auth").hidden = true;
+    $("workspace").hidden = false;
+    schedule();
+    navigate(location.hash.slice(1));
+  } else {
+    $("token").focus();
+  }
+};
+async function boot() {
+  theme(saved("theme", "paper"));
+  setLocale(saved("locale", "zh-CN"));
+  $("locale").value = document.documentElement.lang;
+  paintStatic();
+  if (!embedded) {
+    $("auth").hidden = false;
+    $("workspace").hidden = true;
+    $("connection").innerHTML = `<i></i><span>${t("等待连接")}</span>`;
+    return;
+  }
+  try {
+    bridge = window.AstrBotPluginPage;
+    if (!bridge)
+      throw new Error(t("未找到 AstrBot 页面桥接，请从插件页面重新打开。"));
+    await Promise.race([
+      Promise.resolve(bridge.ready?.()),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error(t("AstrBot 页面连接超时"))), 15000),
+      ),
+    ]);
+    const context = bridge.getContext?.() || {};
+    try {
+      Object.assign(preferences, await api("preferences", {}, "GET", true));
+    } catch {
+      /* Older plugin bridge: keep session preferences. */
+    }
+    theme(saved("theme", context.isDark ? "midnight" : "paper"));
+    setLocale(
+      saved("locale", context.locale?.startsWith("en") ? "en-US" : "zh-CN"),
+    );
+    $("locale").value = document.documentElement.lang;
+    paintStatic();
+    if (!saved("theme", ""))
+      theme(context.isDark || context.theme === "dark" ? "midnight" : "paper");
+    if (!saved("locale", "")) {
+      setLocale(context.locale?.startsWith("en") ? "en-US" : "zh-CN");
+      $("locale").value = document.documentElement.lang;
+      paintStatic();
+    }
+    const status = await api("status");
+    if (status.enabled && !status.configured)
+      throw new Error(status.error || t("后端连接配置不完整"));
+    S.mode = status.enabled ? "observer" : "local";
+    if (S.mode === "local") S.metric = "current";
+    const tab = location.hash.slice(1);
+    if (navs.some((n) => n[0] === tab)) S.tab = tab;
+    await refresh();
+    schedule();
+    if (S.tab === "diagnostics") loadDiagnostics();
+  } catch (e) {
+    S.errors = [e.message];
+    setNotice();
+    $("content").innerHTML =
+      `<div class="card">${empty(t("暂时无法读取数据"), e.message)}</div>`;
+    $("content").setAttribute("aria-busy", "false");
+  }
+}
+boot();

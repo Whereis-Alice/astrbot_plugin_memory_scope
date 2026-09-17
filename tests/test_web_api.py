@@ -180,11 +180,24 @@ class StubCollector:
 
     async def census_now(self):
         self.census_calls += 1
-        return {"generated_at": 778.0, "census_meta": {}, "plugins": [], "totals": {}, "notes": []}
+        return {
+            "generated_at": 778.0,
+            "census_meta": {},
+            "plugins": [],
+            "totals": {},
+            "notes": [],
+        }
 
     async def audit_now(self):
         self.audit_calls += 1
-        return {"generated_at": 779.0, "audit_meta": {}, "opportunities": [], "plugins": [], "totals": {}, "notes": []}
+        return {
+            "generated_at": 779.0,
+            "audit_meta": {},
+            "opportunities": [],
+            "plugins": [],
+            "totals": {},
+            "notes": [],
+        }
 
     async def force_gc(self):
         self.gc_calls += 1
@@ -199,8 +212,10 @@ class FakeRequest:
 
     def get_json(self, force=False, silent=False):
         if self._awaitable_body:
+
             async def later():
                 return self._body
+
             return later()
         return self._body
 
@@ -260,11 +275,11 @@ def test_register_exposes_v2_routes_and_noops_without_web(api, monkeypatch):
             registered.append(args)
 
     routes = instance.register(Context())
-    assert len(routes) == 10
+    assert len(routes) == 13
     assert "GET /api/plug/astrbot_plugin_memory_scope/imports" in routes
     assert "POST /api/plug/astrbot_plugin_memory_scope/census" in routes
     assert "POST /api/plug/astrbot_plugin_memory_scope/audit" in routes
-    assert len(registered) == 10
+    assert len(registered) == 13
 
     monkeypatch.setattr(web_api, "_WEB_AVAILABLE", False)
     assert instance.register(Context()) == []
@@ -313,7 +328,9 @@ def test_plugins_passes_query_options(api):
 
 def test_detail_validation_refresh_and_options(api):
     collector = StubCollector(known=set(), discovered={"late_plugin"})
-    instance = api(collector, FakeRequest(args={"name": "late_plugin", "deep": "1", "census": "1"}))
+    instance = api(
+        collector, FakeRequest(args={"name": "late_plugin", "deep": "1", "census": "1"})
+    )
     payload = data_of(run(instance.get_detail()))
     assert payload["detail"]["name"] == "late_plugin"
     assert collector.ensure_calls == [True]
@@ -412,3 +429,92 @@ def test_gc_delegates_to_collector(api):
     instance = api(collector)
     assert data_of(run(instance.post_gc())) == {"collected": 7}
     assert collector.gc_calls == 1
+
+
+def test_deep_scan_requires_explicit_post_and_does_not_record_sample(api):
+    collector = StubCollector()
+    instance = api(collector)
+    data_of(run(instance.post_deep()))
+    assert collector.report_calls[-1] == {
+        "deep": True,
+        "census": False,
+        "audit": False,
+        "record_sample": False,
+    }
+
+
+def test_neutral_multidict_without_iterator_preserves_read_only_flags(api):
+    class NeutralMultiDict:
+        def __init__(self, values):
+            self.values = values
+
+        def keys(self):
+            return self.values.keys()
+
+        def get(self, key):
+            return self.values.get(key)
+
+        def __getitem__(self, key):
+            return self.values[key]
+
+    collector = StubCollector()
+    request = SimpleNamespace(
+        query=NeutralMultiDict(
+            {"sample": "0", "census": "0", "audit": "0", "deep": "0"}
+        )
+    )
+    instance = api(collector, request)
+    data_of(run(instance.get_plugins()))
+    assert collector.report_calls[-1] == {
+        "deep": False,
+        "record_sample": False,
+        "census": False,
+        "audit": False,
+    }
+
+
+def test_preferences_are_validated_and_persist_without_credentials(api):
+    class KV:
+        def __init__(self):
+            self.data = {}
+
+        async def get_kv_data(self, key, default):
+            return self.data.get(key, default)
+
+        async def put_kv_data(self, key, value):
+            self.data[key] = value
+
+    instance = api(
+        StubCollector(),
+        FakeRequest(
+            body={
+                "theme": "plum",
+                "locale": "en-US",
+                "token": "must-not-store",
+                "unexpected": [],
+            }
+        ),
+    )
+    instance.preference_store = KV()
+    assert data_of(run(instance.post_preferences())) == {
+        "theme": "plum",
+        "locale": "en-US",
+    }
+    assert data_of(run(instance.get_preferences())) == {
+        "theme": "plum",
+        "locale": "en-US",
+    }
+    assert "must-not-store" not in str(instance.preference_store.data)
+    assert (
+        web_api.MemoryScopeWebApi._clean_preferences({"theme": [], "locale": "xx"})
+        == {}
+    )
+
+
+def test_disabled_reference_scan_reports_reason_without_running(api):
+    collector = StubCollector()
+    collector.settings.deep_scan_enabled = False
+    instance = api(collector)
+    result = run(instance.post_deep())
+    assert result["status_code"] == 400
+    assert not collector.report_calls

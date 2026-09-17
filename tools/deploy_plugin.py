@@ -25,7 +25,7 @@ def main():
         backup.mkdir(parents=True, mode=0o700)
         shutil.copytree(destination, backup / destination.name)
     destination.mkdir(parents=True, exist_ok=True)
-    for name in ("core", "pages", ".astrbot-plugin"):
+    for name in ("core", "pages", ".astrbot-plugin", "docs"):
         shutil.copytree(
             source / name,
             destination / name,
@@ -38,6 +38,7 @@ def main():
         "_conf_schema.json",
         "requirements.txt",
         "README.md",
+        "changelog.md",
         "LICENSE",
     ):
         shutil.copy2(source / name, destination / name)

@@ -303,15 +303,79 @@ class Observer:
             },
         }
 
-    def report(self, run_id: str) -> dict:
+    def report(self, run_id: str, *, include_samples=True) -> dict:
         run = self.store.run(run_id)
         if not run:
             raise ValueError("Unknown run")
-        return startup_report(
-            run,
-            self.store.rows("samples", run_id, 50000),
-            self.store.rows("events", run_id, 50000),
+        events = self.store.rows("events", run_id, 50000)
+        until = (
+            None
+            if include_samples
+            else max(
+                (
+                    e["ts"]
+                    for e in events
+                    if e["kind"] in {"phase_end", "log_plugin_start"}
+                ),
+                default=run["started_at"],
+            )
+            + 0.3
         )
+        result = startup_report(
+            run,
+            self.store.rows("samples", run_id, 50000, until=until, compact=True),
+            events,
+        )
+        if not include_samples:
+            result.pop("samples", None)
+        return result
+
+    def trend(self, run_id: str, seconds: int = 3600) -> dict:
+        run = self.store.run(run_id)
+        if not run:
+            raise ValueError("Unknown run")
+        end = run.get("ended_at") or time.time()
+        points = self.store.rows(
+            "samples",
+            run_id,
+            50000,
+            since=end - seconds if seconds else None,
+            compact=True,
+        )
+        # Keep first/last and metric extrema; never load historical process trees.
+        count = len(points)
+        if count > 1800:
+            step = (count + 179) // 180
+            selected = {}
+            for index in range(0, count, step):
+                bucket = points[index : index + step]
+                for item in (bucket[0], bucket[-1]):
+                    selected[item["ts"]] = item
+                for key in ("current", "anon_swap", "swap"):
+                    missing = [
+                        p for p in bucket if p.get("memory", {}).get(key) is None
+                    ]
+                    if missing:
+                        # A missing sample is a discontinuity, never a zero or
+                        # a line interpolated across an unavailable metric.
+                        selected[missing[0]["ts"]] = missing[0]
+                    valid = [
+                        p for p in bucket if p.get("memory", {}).get(key) is not None
+                    ]
+                    if valid:
+                        for item in (
+                            min(valid, key=lambda p, k=key: p["memory"][k]),
+                            max(valid, key=lambda p, k=key: p["memory"][k]),
+                        ):
+                            selected[item["ts"]] = item
+            points = [selected[ts] for ts in sorted(selected)]
+        return {
+            "run_id": run_id,
+            "samples": points,
+            "source_points": count,
+            "downsampled": len(points) < count,
+            "seconds": seconds,
+        }
 
     def summary(self, run_id: str) -> dict:
         run = self.store.run(run_id)

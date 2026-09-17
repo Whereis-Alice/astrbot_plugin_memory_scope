@@ -789,6 +789,7 @@ class MemoryCollector:
                 "census_types": seen.top_types(6) if seen is not None else [],
                 "lazy_savings_bytes": audit.known_bytes if audit is not None else 0,
                 "audit_findings": len(audit.imports) if audit is not None else 0,
+                "audit_measured": audit is not None,
                 "audit_error": audit.error if audit is not None else None,
                 "delta_bytes": (
                     self.history.delta(entry.name, census_bytes)

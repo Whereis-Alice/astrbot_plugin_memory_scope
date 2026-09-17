@@ -1,302 +1,125 @@
 <!doctype html>
-<html lang="zh-CN" data-theme="dark" data-skin="dark">
-<head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>MemoryScope 内存观察</title>
-<link rel="stylesheet" href="./style.css" />
-<link rel="stylesheet" href="./observer.css" />
-</head>
-<body>
-<div class="ambient" aria-hidden="true">
-  <span class="orb orb-a"></span>
-  <span class="orb orb-b"></span>
-  <span class="orb orb-c"></span>
-</div>
-<svg class="noise" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
-  <filter id="noise-filter">
-    <feTurbulence type="fractalNoise" baseFrequency="0.8" numOctaves="3" stitchTiles="stitch" />
-  </filter>
-  <rect width="100%" height="100%" filter="url(#noise-filter)" />
-</svg>
-
-<div class="shell">
-  <header class="topbar">
-    <div class="brand">
-      <span class="mark" aria-hidden="true">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
-          <rect x="4.5" y="4.5" width="15" height="15" rx="4.2" />
-          <rect x="9.2" y="9.2" width="5.6" height="5.6" rx="1.6" />
-          <path d="M12 2.4v2.1M12 19.5v2.1M2.4 12h2.1M19.5 12h2.1M7.6 2.7v1.8M16.4 2.7v1.8M7.6 19.5v1.8M16.4 19.5v1.8" />
-        </svg>
-      </span>
-      <span class="brand-text">
-        <strong id="page-title">MemoryScope 内存观察</strong>
-        <small id="page-desc">用轻量探针观察进程、插件导入成本与运行时对象</small>
-      </span>
-    </div>
-    <nav class="nav" role="tablist" aria-label="MemoryScope">
-      <button class="nav-btn" type="button" data-tab="observer" role="tab" aria-selected="false" data-i18n="tab.observer">服务器观察</button>
-      <button class="nav-btn is-active" type="button" data-tab="overview" role="tab" aria-selected="true" data-i18n="tab.overview">总览</button>
-      <button class="nav-btn" type="button" data-tab="plugins" role="tab" aria-selected="false" data-i18n="tab.plugins">插件</button>
-      <button class="nav-btn" type="button" data-tab="imports" role="tab" aria-selected="false" data-i18n="tab.imports">导入成本</button>
-      <button class="nav-btn" type="button" data-tab="audit" role="tab" aria-selected="false" data-i18n="tab.audit">依赖审计</button>
-      <button class="nav-btn" type="button" data-tab="census" role="tab" aria-selected="false" data-i18n="tab.census">对象普查</button>
-      <button class="nav-btn" type="button" data-tab="alerts" role="tab" aria-selected="false"><span data-i18n="tab.alerts">告警</span><span id="alert-badge" class="badge" hidden>0</span></button>
-      <button class="nav-btn" type="button" data-tab="help" role="tab" aria-selected="false" data-i18n="tab.help">口径说明</button>
-    </nav>
-    <div class="topbar-actions">
-      <label class="field"><span id="auto-label">自动刷新</span><select id="auto-select" class="select"></select></label>
-      <label class="field"><span id="skin-label">主题</span><select id="skin-select" class="select"></select></label>
-      <button id="btn-deep" class="btn btn-ghost btn-sm" type="button" data-i18n="action.deep">引用图扫描</button>
-      <button id="btn-refresh" class="btn btn-primary btn-sm" type="button" data-i18n="action.refresh">刷新</button>
-    </div>
-  </header>
-
-  <div id="banner" class="banner" data-level="info" hidden>
-    <span class="banner-dot" aria-hidden="true"></span>
-    <div class="banner-body">
-      <strong id="banner-title">测量说明</strong>
-      <p id="banner-text"></p>
-    </div>
-  </div>
-
-  <main class="panels">
-    <section id="panel-observer" class="panel" role="tabpanel"><div id="observer-root" data-embedded></div></section>
-    <section id="panel-overview" class="panel is-active" role="tabpanel">
-      <article class="card hero">
-        <div class="hero-main">
-          <span class="eyebrow" data-i18n="hero.eyebrow">PROCESS FOOTPRINT</span>
-          <h1><span id="hero-value">—</span><em id="hero-unit"></em></h1>
-          <p id="hero-lead" class="hero-lead"></p>
-          <div id="hero-tags" class="hero-tags"></div>
+<html lang="zh-CN" data-scope-theme="paper">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <title>MemoryScope · 内存观察台</title>
+    <link rel="stylesheet" href="./style.css" />
+    <script type="module" src="./app.js"></script>
+  </head>
+  <body data-mode="embedded">
+    <div class="shell">
+      <header class="topbar">
+        <a class="brand" href="#overview" aria-label="MemoryScope"
+          ><svg
+            class="brand-mark"
+            viewBox="0 0 40 40"
+            fill="none"
+            aria-hidden="true"
+          >
+            <rect x="1" y="1" width="38" height="38" rx="12" />
+            <path d="M8 24h6l4-13 5 20 4-13 3 6h3" /></svg
+          ><span
+            >Memory<span class="brand-light">Scope</span
+            ><small data-t="brand.sub">内存观察台</small></span
+          ></a
+        >
+        <div class="header-controls">
+          <label class="sr-only" for="locale" data-t="language">语言</label
+          ><select id="locale" class="compact">
+            <option value="zh-CN">中文</option>
+            <option value="en-US">English</option></select
+          ><label class="sr-only" for="theme" data-t="theme">主题</label
+          ><select id="theme" class="compact">
+            <option value="paper" data-t="theme.paper">砂白</option>
+            <option value="midnight" data-t="theme.midnight">深海</option>
+            <option value="plum" data-t="theme.plum">暮紫</option></select
+          ><button id="export" class="quiet" data-t="export">导出报告</button>
         </div>
-        <div id="hero-side" class="hero-side"></div>
-      </article>
-
-      <div id="metrics" class="metrics"></div>
-
-      <div class="dashboard-grid">
-        <article class="card trend-panel">
-          <header class="card-head">
-            <div class="card-title">
-              <h2 data-i18n="trend.title">内存足迹趋势</h2>
-              <p id="trend-caption" class="card-sub"></p>
-            </div>
-            <div class="card-actions">
-              <div id="trend-legend" class="legend"></div>
-              <button id="btn-baseline-set" class="btn btn-ghost btn-xs" type="button" data-i18n="action.baselineSet">设为基线</button>
-              <button id="btn-baseline-clear" class="btn btn-ghost btn-xs" type="button" data-i18n="action.baselineClear">清除基线</button>
-              <button id="btn-gc" class="btn btn-ghost btn-xs" type="button" data-i18n="action.gc">强制 GC</button>
-            </div>
-          </header>
-          <div id="trend-chart" class="chart"></div>
-          <div id="trend-summary" class="trend-summary"></div>
-        </article>
-        <div class="side-stack">
-          <article class="card">
-            <header class="card-head">
-              <div class="card-title">
-                <h2 data-i18n="top.title">占用最高的插件</h2>
-                <p id="top-caption" class="card-sub"></p>
-              </div>
-            </header>
-            <div id="top-bars" class="bar-list"></div>
-          </article>
-          <article class="card">
-            <header class="card-head">
-              <div class="card-title">
-                <h2 data-i18n="probe.title">探针状态</h2>
-                <p class="card-sub" data-i18n="probe.sub">默认只跑最便宜的探针；贵的那几个是手动按钮。</p>
-              </div>
-            </header>
-            <div id="probe-status" class="status-list"></div>
-          </article>
-        </div>
+      </header>
+      <div class="navrow">
+        <nav id="navigation" aria-label="页面导航"></nav>
+        <span id="connection" class="connection" role="status"
+          ><i></i><span data-t="connecting">连接中</span></span
+        >
       </div>
-
-      <div class="dashboard-grid grid-even">
-        <article class="card">
-          <header class="card-head">
-            <div class="card-title">
-              <h2 data-i18n="attribution.title">归因构成</h2>
-              <p id="attribution-caption" class="card-sub"></p>
-            </div>
-          </header>
-          <div id="attribution-stack" class="stack-bar"></div>
-          <div id="attribution-grid" class="mini-grid"></div>
-        </article>
-        <article class="card">
-          <header class="card-head">
-            <div class="card-title">
-              <h2 data-i18n="breakdown.title">对象普查来源</h2>
-              <p id="breakdown-hint" class="card-sub"></p>
-            </div>
-          </header>
-          <div id="breakdown-bars" class="bar-list"></div>
-        </article>
-      </div>
-    </section>
-
-    <section id="panel-plugins" class="panel" role="tabpanel">
-      <article class="card">
-        <header class="card-head">
-          <div class="card-title">
-            <h2 data-i18n="tab.plugins">插件</h2>
-            <p id="plugin-hint" class="card-sub"></p>
-          </div>
-          <div class="card-actions">
-            <input id="search" class="input" type="search" autocomplete="off" spellcheck="false" placeholder="搜索插件名…" />
-            <span id="plugin-count" class="pill info"></span>
-            <span id="census-state" class="pill"></span>
-            <span id="deep-state" class="pill"></span>
-          </div>
-        </header>
-        <div class="table-wrap">
-          <table class="table">
-            <thead><tr id="plugin-head"></tr></thead>
-            <tbody id="plugin-body"></tbody>
-          </table>
+      <form id="auth" class="auth card" hidden>
+        <div>
+          <h1 data-t="auth.title">连接观察后端</h1>
+          <p data-t="auth.desc">
+            使用后端配置文件中的 token。凭据仅保留在当前页面内存。
+          </p>
         </div>
-      </article>
-    </section>
-
-    <section id="panel-imports" class="panel" role="tabpanel">
-      <div id="import-cards" class="metrics metrics-3"></div>
-      <article class="card">
-        <header class="card-head">
-          <div class="card-title">
-            <h2 data-i18n="imports.packageTitle">第三方包</h2>
-            <p id="package-hint" class="card-sub"></p>
-          </div>
-        </header>
-        <div class="table-wrap">
-          <table class="table">
-            <thead><tr id="package-head"></tr></thead>
-            <tbody id="package-body"></tbody>
-          </table>
+        <label for="token" data-t="auth.token">后端访问凭据</label>
+        <div class="inline">
+          <input
+            id="token"
+            type="password"
+            autocomplete="off"
+            required
+          /><button class="primary" data-t="connect">连接</button>
         </div>
-      </article>
-      <article class="card">
-        <header class="card-head">
-          <div class="card-title">
-            <h2 data-i18n="imports.pluginTitle">按插件分摊</h2>
-            <p class="card-sub" data-i18n="imports.pluginSub">导入成本是启动期 RSS 差分，不等于当前独占内存。</p>
+      </form>
+      <div id="notice" class="notice" role="status" hidden></div>
+      <main id="workspace" tabindex="-1">
+        <div class="page-heading">
+          <div>
+            <p class="eyebrow" id="eyebrow">MEMORY OBSERVATORY</p>
+            <h1 id="page-title">总览</h1>
+            <p id="page-subtitle" class="muted"></p>
           </div>
-        </header>
-        <div class="table-wrap">
-          <table class="table">
-            <thead><tr id="import-plugin-head"></tr></thead>
-            <tbody id="import-plugin-body"></tbody>
-          </table>
+          <div class="refresh-controls">
+            <span id="updated" class="muted"></span
+            ><label class="sr-only" for="autorefresh" data-t="auto"
+              >自动刷新</label
+            ><select id="autorefresh">
+              <option value="15" data-t="auto.15">每 15 秒</option>
+              <option value="60" data-t="auto.60">每 60 秒</option>
+              <option value="0" data-t="auto.off">暂停刷新</option></select
+            ><button id="refresh" data-t="refresh">刷新</button>
+          </div>
         </div>
-      </article>
-    </section>
-
-    <section id="panel-audit" class="panel" role="tabpanel">
-      <article class="card">
-        <header class="card-head">
-          <div class="card-title">
-            <h2 data-i18n="tab.audit">依赖审计</h2>
-            <p id="audit-summary" class="card-sub"></p>
-          </div>
-          <div class="card-actions">
-            <button id="btn-audit" class="btn btn-primary btn-sm" type="button" data-i18n="action.audit">运行审计</button>
-          </div>
-        </header>
-        <div class="table-wrap">
-          <table class="table">
-            <thead><tr id="audit-head"></tr></thead>
-            <tbody id="audit-body"></tbody>
-          </table>
+        <div id="content" aria-busy="true">
+          <div class="loading" data-t="loading">正在读取数据…</div>
         </div>
-        <p id="audit-unknown" class="callout" hidden></p>
-      </article>
-    </section>
-
-    <section id="panel-census" class="panel" role="tabpanel">
-      <article class="card">
-        <header class="card-head">
-          <div class="card-title">
-            <h2 data-i18n="tab.census">对象普查</h2>
-            <p id="census-summary" class="card-sub"></p>
-          </div>
-          <div class="card-actions">
-            <button id="btn-census" class="btn btn-primary btn-sm" type="button" data-i18n="action.census">运行普查</button>
-          </div>
+      </main>
+      <footer>
+        <span
+          >MemoryScope <span class="footer-dot">·</span
+          ><span data-t="footer">让每一份占用，都有依据。</span></span
+        ><button data-go="guide" class="text-button" data-t="metrics.help">
+          如何理解这些数字 ↗
+        </button>
+      </footer>
+    </div>
+    <div id="drawer" class="drawer-backdrop" hidden>
+      <section
+        class="drawer"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="detail-title"
+        tabindex="-1"
+      >
+        <header class="drawer-head">
+          <span class="eyebrow">PLUGIN INSIGHT</span
+          ><button id="close-drawer" data-t="close">关闭</button>
         </header>
-        <p id="census-warning" class="callout callout-warn"></p>
-      </article>
-      <div class="dashboard-grid grid-even">
-        <article class="card">
-          <header class="card-head">
-            <div class="card-title">
-              <h2 data-i18n="census.byPlugin">按插件</h2>
-              <p class="card-sub" data-i18n="census.byPluginSub">按类型所属模块归属的浅层大小。</p>
-            </div>
-          </header>
-          <div id="census-plugin-bars" class="bar-list tall"></div>
-        </article>
-        <article class="card">
-          <header class="card-head">
-            <div class="card-title">
-              <h2 data-i18n="census.byBucket">其他来源</h2>
-              <p class="card-sub" data-i18n="census.byBucketSub">无法归属到插件的对象按来源聚合。</p>
-            </div>
-          </header>
-          <div id="census-bucket-bars" class="bar-list tall"></div>
-        </article>
-      </div>
-    </section>
-
-    <section id="panel-alerts" class="panel" role="tabpanel">
-      <article class="card">
-        <header class="card-head">
-          <div class="card-title">
-            <h2 data-i18n="tab.alerts">告警</h2>
-            <p id="alerts-summary" class="card-sub"></p>
-          </div>
-        </header>
-        <div id="alerts" class="alert-list"></div>
-      </article>
-    </section>
-
-    <section id="panel-help" class="panel" role="tabpanel">
-      <article class="card">
-        <header class="card-head">
-          <div class="card-title">
-            <h2 data-i18n="help.title">指标口径</h2>
-            <p class="card-sub" data-i18n="help.sub">每个数字都写清楚它到底测了什么，以及它测不到什么。</p>
-          </div>
-        </header>
-        <dl id="help-list" class="help-list"></dl>
-      </article>
-      <article class="card">
-        <header class="card-head">
-          <div class="card-title">
-            <h2 data-i18n="help.safetyTitle">在小机器上的注意事项</h2>
-            <p class="card-sub" data-i18n="help.safetySub">这个插件默认不做任何会拖慢 AstrBot 的事。</p>
-          </div>
-        </header>
-        <ul id="safety-list" class="safety-list"></ul>
-      </article>
-    </section>
-  </main>
-</div>
-
-<div id="drawer" class="drawer" hidden>
-  <div class="drawer-scrim" data-close="1"></div>
-  <aside class="drawer-body" role="dialog" aria-modal="true" aria-labelledby="drawer-title">
-    <header class="drawer-head">
-      <h2 id="drawer-title">插件详情</h2>
-      <button id="drawer-close" class="btn btn-ghost btn-sm" type="button" data-i18n="action.close">关闭</button>
-    </header>
-    <div id="drawer-content" class="drawer-content"></div>
-  </aside>
-</div>
-
-<div id="toast" class="toast" data-kind="ok" hidden></div>
-<script type="module" src="./app.js"></script>
-<script type="module" src="./observer.js"></script>
-</body>
+        <div id="detail"></div>
+      </section>
+    </div>
+    <dialog id="confirm">
+      <form method="dialog">
+        <h2 id="confirm-title"></h2>
+        <p id="confirm-text"></p>
+        <div class="dialog-actions">
+          <button value="cancel" data-t="cancel">取消</button
+          ><button value="confirm" class="primary" data-t="continue">
+            确认执行
+          </button>
+        </div>
+      </form>
+    </dialog>
+    <div id="toast" class="toast" role="status" hidden></div>
+  </body>
 </html>

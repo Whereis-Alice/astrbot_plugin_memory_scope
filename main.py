@@ -42,7 +42,7 @@ from .core.text_report import (
 from .core.web_api import MemoryScopeWebApi
 
 PLUGIN_ID = "astrbot_plugin_memory_scope"
-PLUGIN_VERSION = "4.0.0"
+PLUGIN_VERSION = "4.1.0"
 # Key used with the plugin KV store so history survives a reload.
 HISTORY_KEY = "history"
 # Flush the ring buffer to the KV store every N samples instead of every sample.
@@ -93,7 +93,9 @@ class MemoryScopePlugin(Star):
             self.collector = MemoryCollector(
                 context, self.settings, PLUGIN_ID, defer_registry=self.observer.enabled
             )
-            self.web_api = MemoryScopeWebApi(PLUGIN_ID, self.collector)
+            self.web_api = MemoryScopeWebApi(
+                PLUGIN_ID, self.collector, preference_store=self
+            )
             self._sampler_task: asyncio.Task[None] | None = None
             self._samples_since_persist = 0
             self._history_loaded = False

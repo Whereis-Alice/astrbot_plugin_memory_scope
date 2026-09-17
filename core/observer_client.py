@@ -133,6 +133,10 @@ class ObserverClient:
         # Only the small metadata list is needed here. Avoid the registry's
         # sys.modules / filesystem walk on the bot's event loop every minute.
         for entry in context.get_all_stars() or []:
+            if not (
+                getattr(entry, "root_dir_name", None) or getattr(entry, "name", None)
+            ):
+                continue
             plugins.append(
                 {
                     "name": str(getattr(entry, "name", "") or ""),

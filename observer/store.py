@@ -82,15 +82,41 @@ class Store:
                 (run_id, value["ts"], pack(value)),
             )
 
-    def rows(self, table: str, run_id: str, limit=10000) -> list[dict]:
+    def rows(
+        self,
+        table: str,
+        run_id: str,
+        limit=10000,
+        *,
+        since=None,
+        until=None,
+        compact=False,
+    ) -> list[dict]:
         if table not in {"samples", "events"}:
             raise ValueError("Invalid history type")
+        where, params = ["run=?"], [run_id]
+        if since is not None:
+            where.append("ts>=?")
+            params.append(since)
+        if until is not None:
+            where.append("ts<=?")
+            params.append(until)
+        params.append(min(limit, 50000))
+        result = []
         with self.lock:
-            rows = self.db.execute(
-                f"SELECT payload FROM {table} WHERE run=? ORDER BY ts DESC,id DESC LIMIT ?",
-                (run_id, min(limit, 50000)),
-            ).fetchall()
-        return [unpack(row[0]) for row in reversed(rows)]
+            cursor = self.db.execute(
+                f"SELECT payload FROM {table} WHERE {' AND '.join(where)} ORDER BY ts DESC,id DESC LIMIT ?",
+                params,
+            )
+            for row in cursor:
+                value = unpack(row[0])
+                if compact:
+                    value = {
+                        k: value[k] for k in ("ts", "memory", "state") if k in value
+                    }
+                result.append(value)
+        result.reverse()
+        return result
 
     def save_job(self, job: dict) -> None:
         with self.lock, self.db:

@@ -13,14 +13,29 @@ class ObserverApi:
         register = getattr(context, "register_web_api", None)
         if not callable(register):
             return
-        for name in ("overview", "runs", "run", "compare", "experiments"):
+
+        async def status():
+            return ok(
+                {
+                    "enabled": self.client.enabled,
+                    "configured": self.client.configured,
+                    "error": self.client.config_error,
+                }
+            )
+
+        register(
+            f"/{plugin_id}/observer_status", status, ["GET"], "MemoryScope 数据源状态"
+        )
+        for name in ("overview", "runs", "run", "trend", "compare", "experiments"):
 
             def make_handler(endpoint):
                 async def handler():
                     try:
                         query = await _query()
                         allowed = {
-                            k: v for k, v in query.items() if k in {"id", "A", "B"}
+                            k: v
+                            for k, v in query.items()
+                            if k in {"id", "A", "B", "seconds", "samples"}
                         }
                         return ok(await self.client.get(endpoint, allowed))
                     except ValueError as exc:

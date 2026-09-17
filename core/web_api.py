@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import inspect
 import time
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from .collector import MemoryCollector
 
@@ -73,8 +74,10 @@ async def _query() -> dict[str, str]:
     if args is None:
         return {}
     try:
-        return {key: str(args.get(key)) for key in args.keys()}
-    except Exception:
+        # AstrBot PluginMultiDict exposes keys() but has no __iter__; iterating
+        # it invokes integer __getitem__ and discards all query flags.
+        return {key: str(args.get(key)) for key in args.keys()}  # noqa: SIM118
+    except Exception:  # noqa: BLE001 - tolerate legacy request wrappers
         return {}
 
 
@@ -133,10 +136,13 @@ def _as_int(value: Any, default: int) -> int:
 class MemoryScopeWebApi:
     """Registers and serves the plugin page endpoints."""
 
-    def __init__(self, plugin_name: str, collector: MemoryCollector) -> None:
+    def __init__(
+        self, plugin_name: str, collector: MemoryCollector, preference_store=None
+    ) -> None:
         self.plugin_name = plugin_name
         self.collector = collector
         self.routes: list[str] = []
+        self.preference_store = preference_store
 
     @property
     def available(self) -> bool:
@@ -155,6 +161,14 @@ class MemoryScopeWebApi:
             ("imports", self.get_imports, ["GET"], "MemoryScope 加载成本与依赖审计"),
             ("census", self.post_census, ["POST"], "MemoryScope 手动对象普查"),
             ("audit", self.post_audit, ["POST"], "MemoryScope 手动依赖审计"),
+            ("deep", self.post_deep, ["POST"], "MemoryScope 手动引用图扫描"),
+            ("preferences", self.get_preferences, ["GET"], "MemoryScope 页面偏好"),
+            (
+                "preferences",
+                self.post_preferences,
+                ["POST"],
+                "MemoryScope 保存页面偏好",
+            ),
             ("baseline", self.post_baseline, ["POST"], "MemoryScope 基线管理"),
             ("gc", self.post_gc, ["POST"], "MemoryScope 手动触发 GC"),
         ]
@@ -395,6 +409,46 @@ class MemoryScopeWebApi:
                 "notes": report.get("notes"),
             },
         )
+
+    def _preference_key(self) -> str:
+        username = getattr(request, "username", None) if request is not None else None
+        return "webui_preferences:" + str(username or "dashboard")
+
+    @staticmethod
+    def _clean_preferences(value) -> dict:
+        if not isinstance(value, dict):
+            return {}
+        choices = {"theme": {"paper", "midnight", "plum"}, "locale": {"zh-CN", "en-US"}}
+        return {
+            key: val
+            for key, val in value.items()
+            if key in choices and isinstance(val, str) and val in choices[key]
+        }
+
+    async def get_preferences(self) -> Any:
+        value = (
+            await self.preference_store.get_kv_data(self._preference_key(), {})
+            if self.preference_store
+            else {}
+        )
+        return ok(self._clean_preferences(value))
+
+    async def post_preferences(self) -> Any:
+        value = self._clean_preferences(await _body())
+        if self.preference_store:
+            await self.preference_store.put_kv_data(self._preference_key(), value)
+        return ok(value)
+
+    async def post_deep(self) -> Any:
+        """Explicit scan; ordinary page GETs never initiate this work."""
+        if not self.collector.settings.deep_scan_enabled:
+            return error_response(
+                "引用图扫描已在插件配置中关闭，请先开启再运行。", status_code=400
+            )
+        report = await self.collector.build_report(
+            deep=True, census=False, audit=False, record_sample=False
+        )
+        return ok(report)
 
     async def post_baseline(self) -> Any:
         body = await _body()
