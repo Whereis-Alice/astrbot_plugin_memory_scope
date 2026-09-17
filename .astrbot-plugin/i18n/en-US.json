@@ -309,7 +309,8 @@
         "help": "Metric guide",
         "imports": "Import cost",
         "overview": "Overview",
-        "plugins": "Plugins"
+        "plugins": "Plugins",
+        "observer": "Server observer"
       },
       "table": {
         "censusHint": "The census is a shallow estimate grouped by defining type module. Select a row for import, object-type and graph details.",

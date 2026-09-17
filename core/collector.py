@@ -122,7 +122,7 @@ class Settings:
     deep_scan_time_budget_ms: int = 3000
     #: How many sampler ticks between automatic retained scans.  0 keeps the
     #: scan manual-only.
-    deep_scan_interval_samples: int = 5
+    deep_scan_interval_samples: int = 0
     #: Milliseconds the scan may hold the GIL before it yields.
     deep_scan_slice_ms: int = 15
     #: Share of wall time the scan may occupy while it runs.
@@ -204,7 +204,7 @@ class Settings:
             ),
             deep_scan_time_budget_ms=as_int("deep_scan_time_budget_ms", 3000, 200, 60_000),
             deep_scan_interval_samples=as_int(
-                "deep_scan_interval_samples", 5, 0, 1000,
+                "deep_scan_interval_samples", 0, 0, 1000,
             ),
             deep_scan_slice_ms=as_int("deep_scan_slice_ms", 15, 1, 200),
             deep_scan_duty_percent=as_int("deep_scan_duty_percent", 25, 5, 100),
@@ -231,6 +231,8 @@ class MemoryCollector:
         context: Any,
         settings: Settings,
         self_plugin_name: str,
+        *,
+        defer_registry: bool = False,
     ) -> None:
         self.context = context
         self.settings = settings
@@ -267,8 +269,9 @@ class MemoryCollector:
         self._deep_rounds = 0
         # Alerts fired by the most recent recorded sample, consumed by main.py.
         self.last_alerts: list[Any] = []
-        self.registry.refresh()
-        self._registry_stamp = time.monotonic()
+        if not defer_registry:
+            self.registry.refresh()
+            self._registry_stamp = time.monotonic()
 
     # ------------------------------------------------------------------
     # helpers

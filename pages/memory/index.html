@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>MemoryScope 内存观察</title>
 <link rel="stylesheet" href="./style.css" />
+<link rel="stylesheet" href="./observer.css" />
 </head>
 <body>
 <div class="ambient" aria-hidden="true">
@@ -35,6 +36,7 @@
       </span>
     </div>
     <nav class="nav" role="tablist" aria-label="MemoryScope">
+      <button class="nav-btn" type="button" data-tab="observer" role="tab" aria-selected="false" data-i18n="tab.observer">服务器观察</button>
       <button class="nav-btn is-active" type="button" data-tab="overview" role="tab" aria-selected="true" data-i18n="tab.overview">总览</button>
       <button class="nav-btn" type="button" data-tab="plugins" role="tab" aria-selected="false" data-i18n="tab.plugins">插件</button>
       <button class="nav-btn" type="button" data-tab="imports" role="tab" aria-selected="false" data-i18n="tab.imports">导入成本</button>
@@ -60,6 +62,7 @@
   </div>
 
   <main class="panels">
+    <section id="panel-observer" class="panel" role="tabpanel"><div id="observer-root" data-embedded></div></section>
     <section id="panel-overview" class="panel is-active" role="tabpanel">
       <article class="card hero">
         <div class="hero-main">
@@ -294,5 +297,6 @@
 
 <div id="toast" class="toast" data-kind="ok" hidden></div>
 <script type="module" src="./app.js"></script>
+<script type="module" src="./observer.js"></script>
 </body>
 </html>

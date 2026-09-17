@@ -6,8 +6,8 @@ at module top level, how live objects are distributed per plugin, and how the
 process RSS moves over time.  Results are exposed both on the Dashboard page
 (``pages/memory``) and through the ``/mem`` chat commands.
 
-v2.0 removed tracemalloc completely.  Two reasons, both measured (README has
-the tables): it is ruinously expensive during the import phase -- v1.0.0 turned
+v2.0 removed tracemalloc completely. It is expensive during the import phase:
+v1.0.0 turned
 it on in this constructor and stretched plugin loading from 39 s to 21 minutes
 on a 2-core / 1.6 GB host -- and its per-plugin numbers are not trustworthy
 anyway, because a shared dependency is billed entirely to whichever plugin
@@ -17,6 +17,7 @@ happened to import it first.
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from typing import Any
 
@@ -26,6 +27,8 @@ from astrbot.api.star import Context, Star, register
 
 from .core.collector import MemoryCollector, Settings
 from .core.import_cost import get_ledger
+from .core.observer_api import ObserverApi
+from .core.observer_client import ObserverClient, render_observer
 from .core.text_report import (
     format_bytes,
     format_ms,
@@ -39,7 +42,7 @@ from .core.text_report import (
 from .core.web_api import MemoryScopeWebApi
 
 PLUGIN_ID = "astrbot_plugin_memory_scope"
-PLUGIN_VERSION = "3.0.0"
+PLUGIN_VERSION = "4.0.0"
 # Key used with the plugin KV store so history survives a reload.
 HISTORY_KEY = "history"
 # Flush the ring buffer to the KV store every N samples instead of every sample.
@@ -55,7 +58,7 @@ FIRST_SAMPLE_DELAY_SECONDS = 8.0
 @register(
     "MemoryScope",
     "Whereis-Alice",
-    "解释 AstrBot 的内存去向：插件导入成本、重依赖顶层导入审计、对象归属普查、RSS 趋势与告警",
+    "独立后端内存观察、启动阶段报告与 A/B/A 对照，保留手动进程内诊断",
     PLUGIN_VERSION,
     "https://github.com/Whereis-Alice/astrbot_plugin_memory_scope",
 )
@@ -67,6 +70,13 @@ class MemoryScopePlugin(Star):
         self.context = context
         self.raw_config = config
         self.settings = Settings.from_config(config or {})
+        self.observer = ObserverClient(config or {})
+        self._inventory_task: asyncio.Task | None = None
+        if self.observer.enabled:
+            self.settings.measure_import_cost = False
+            self.settings.deep_scan_interval_samples = 0
+            self.settings.census_enabled = False
+            self.settings.persist_history = False
         # Install the import hook before anything else in this constructor: it
         # can only account for plugins AstrBot imports *after* MemoryScope, so
         # every line of setup delayed here is coverage lost.  The hook itself
@@ -74,10 +84,15 @@ class MemoryScopePlugin(Star):
         # ~2 us, no allocation tracing -- and it uninstalls itself once
         # on_astrbot_loaded fires.
         self._hook_installed = False
-        if self.settings.measure_import_cost:
+        if (
+            self.settings.measure_import_cost
+            and os.environ.get("MEMORYSCOPE_EARLY_PROBE") != "1"
+        ):
             self._hook_installed = self._ledger().install()
         try:
-            self.collector = MemoryCollector(context, self.settings, PLUGIN_ID)
+            self.collector = MemoryCollector(
+                context, self.settings, PLUGIN_ID, defer_registry=self.observer.enabled
+            )
             self.web_api = MemoryScopeWebApi(PLUGIN_ID, self.collector)
             self._sampler_task: asyncio.Task[None] | None = None
             self._samples_since_persist = 0
@@ -87,6 +102,7 @@ class MemoryScopePlugin(Star):
             self._loaded_seen = False
 
             self._web_routes = self.web_api.register(context)
+            ObserverApi(self.observer).register(context, PLUGIN_ID)
             if not self._web_routes:
                 logger.warning(
                     "MemoryScope 未能注册 Web API，Dashboard 页面将不可用"
@@ -135,6 +151,9 @@ class MemoryScopePlugin(Star):
         return "done" if status.get("plugin_count") else "off"
 
     async def terminate(self) -> None:
+        if self._inventory_task:
+            self._inventory_task.cancel()
+            await asyncio.gather(self._inventory_task, return_exceptions=True)
         task = self._sampler_task
         self._sampler_task = None
         if task is not None and not task.done():
@@ -159,6 +178,11 @@ class MemoryScopePlugin(Star):
         ledger = self._ledger()
         if ledger.installed:
             ledger.uninstall()
+        if self.observer.enabled:
+            self._inventory_task = asyncio.create_task(
+                self._publish_inventory(loaded=True)
+            )
+            return
         self.collector.ensure_registry(force=True)
         status = self.collector.import_hook_status()
         if not status.get("plugin_count"):
@@ -244,6 +268,9 @@ class MemoryScopePlugin(Star):
         )
 
     async def _sample_tick(self) -> None:
+        if self.observer.enabled:
+            await self._publish_inventory()
+            return
         # The retained-graph scan rides along on every Nth tick; the collector
         # owns that schedule so the chat commands and the WebUI share it.
         for alert in await self.collector.sample_once():
@@ -253,6 +280,12 @@ class MemoryScopePlugin(Star):
         if self._samples_since_persist >= PERSIST_EVERY:
             self._samples_since_persist = 0
             await self._persist_history()
+
+    async def _publish_inventory(self, loaded=False) -> None:
+        try:
+            await self.observer.publish_inventory(self.context, loaded=loaded)
+        except ValueError as exc:
+            logger.debug("MemoryScope 独立后端状态同步失败: %s", exc)
 
     # ------------------------------------------------------------------
     # chat commands
@@ -269,6 +302,14 @@ class MemoryScopePlugin(Star):
     @mem.command("top")
     async def cmd_top(self, event: AstrMessageEvent, count: int = 0):
         """总览：进程 RSS、趋势与各插件的导入成本。"""
+        if self.observer.enabled:
+            try:
+                yield event.plain_result(
+                    render_observer(await self.observer.get("overview"))
+                )
+            except ValueError as exc:
+                yield event.plain_result(str(exc))
+            return
         report = await self.collector.build_report(deep=False, record_sample=True)
         yield event.plain_result(render_overview(report, top_n=self._top_n(count)))
 
@@ -276,6 +317,10 @@ class MemoryScopePlugin(Star):
     @mem.command("imports")
     async def cmd_imports(self, event: AstrMessageEvent, count: int = 0):
         """查看加载期的导入成本：按插件与按第三方包。"""
+        if self.observer.enabled:
+            async for result in self.cmd_startup(event):
+                yield result
+            return
         report = await self.collector.build_report(deep=False, record_sample=False)
         yield event.plain_result(render_imports(report, top_n=self._top_n(count)))
 
@@ -339,14 +384,100 @@ class MemoryScopePlugin(Star):
         if entry is None:
             entry = self._fuzzy_match(target)
         if entry is None:
-            yield event.plain_result(f"未找到插件 {target}，请用 /mem top 查看可用名称。")
+            yield event.plain_result(
+                f"未找到插件 {target}，请用 /mem top 查看可用名称。"
+            )
             return
         report = await self.collector.build_report(
             deep=False,
             detail_for=entry.name,
             record_sample=False,
+            census=False,
+            audit=False,
         )
         yield event.plain_result(render_plugin_detail(report.get("detail") or {}))
+        if self.observer.enabled:
+            try:
+                report = await self.observer.get("run")
+                key = entry.import_key
+                phases = [p for p in report.get("phases", []) if p["plugin"] == key]
+                lines = [
+                    f"启动批次：{report['run']['id']}",
+                    "以下为时间段增量，不是独占内存：",
+                ]
+                for phase in phases:
+                    delta = phase.get("process_rss_swap_delta")
+                    value = "未采集" if delta is None else f"{delta / 1048576:+.2f} MiB"
+                    lines.append(
+                        f"{phase['phase']} · {phase['duration_ms']:.1f}ms · 主进程 RSS+Swap {value}"
+                    )
+                yield event.plain_result(
+                    "\n".join(lines) if phases else "本批次未采集到该插件的启动边界。"
+                )
+            except ValueError as exc:
+                yield event.plain_result(str(exc))
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @mem.command("startup")
+    async def cmd_startup(self, event: AstrMessageEvent):
+        """查看独立后端记录的最近一次启动报告。"""
+        try:
+            report = await self.observer.get("run")
+            phases = report.get("phases", [])
+            rows = sorted(
+                phases, key=lambda p: p.get("process_rss_swap_delta") or 0, reverse=True
+            )[:12]
+            lines = [
+                f"启动批次：{report['run']['id']}",
+                f"探针记录完整：{report.get('probe_complete')} · 自身开销 {report.get('probe_overhead_ms')} ms",
+                "主进程 RSS+Swap 阶段增量（含并发影响）：",
+            ]
+            for row in rows:
+                delta = row.get("process_rss_swap_delta")
+                value = "未采集" if delta is None else f"{delta / 1048576:+.2f} MiB"
+                lines.append(
+                    f"{row['plugin']} / {row['phase']}：{value} · {row['duration_ms']:.1f}ms"
+                )
+            yield event.plain_result("\n".join(lines))
+        except ValueError as exc:
+            yield event.plain_result(str(exc))
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @mem.command("compare")
+    async def cmd_compare(self, event: AstrMessageEvent):
+        """查看重启对照实验结果；创建实验请使用页面。"""
+        try:
+            jobs = await self.observer.get("experiments")
+            lines = []
+            classifications = {
+                "insufficient_data": "采样不足",
+                "single_trial": "单轮初步结果，需重复验证",
+                "environment_changed": "环境变化，不宜归因",
+                "within_variation": "差异未超过自然波动",
+                "difference_observed": "重复观测到差异",
+            }
+            for job in jobs[:5]:
+                result = job.get("result") or {}
+                saving = result.get("saving_bytes")
+                value = (
+                    "未形成结论"
+                    if saving is None
+                    else f"A−B 差值 {saving / 1048576:+.2f} MiB"
+                )
+                lines.append(
+                    f"{job['plugin']} · {job['mode']} · {job['state']} · {value}"
+                )
+                if result:
+                    lines.append(
+                        classifications.get(result.get("classification"), "结果待核实")
+                    )
+            if jobs:
+                lines.append("差值受后台任务与消息流量影响，不是插件独占内存。")
+            yield event.plain_result(
+                "\n".join(lines) or "暂无对照实验；可在服务器观察页创建。"
+            )
+        except ValueError as exc:
+            yield event.plain_result(str(exc))
 
     @filter.permission_type(filter.PermissionType.ADMIN)
     @mem.command("gc")

@@ -29,7 +29,7 @@ def test_defaults_from_empty_config():
     assert settings.deep_scan_time_budget_ms == 3000
     # The scan is spread over every 5th tick and yields the GIL every 15 ms at a
     # 25% duty cycle.  These three together are what keep it off the hot path.
-    assert settings.deep_scan_interval_samples == 5
+    assert settings.deep_scan_interval_samples == 0
     assert settings.deep_scan_slice_ms == 15
     assert settings.deep_scan_duty_percent == 25
     # smaps_rollup is on by default but rate-limited: 5.4 ms per read is fine

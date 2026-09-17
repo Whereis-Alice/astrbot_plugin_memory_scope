@@ -1,4 +1,22 @@
 {
+  "observer_config_path": {
+    "description": "独立后端连接配置文件",
+    "hint": "同机部署填 /etc/memoryscope/observer.json。通过观测启动入口运行时自动发现，无需填写。启用后后端负责持续采样，本插件只同步清单、展示结果和执行手动诊断。",
+    "type": "string",
+    "default": ""
+  },
+  "observer_url": {
+    "description": "独立后端地址（可选）",
+    "hint": "例如 http://127.0.0.1:8766；与配置文件二选一。",
+    "type": "string",
+    "default": ""
+  },
+  "observer_token": {
+    "description": "独立后端访问凭据",
+    "hint": "使用配置文件或观测启动入口时无需填写。只由插件服务端使用，不发送到页面。",
+    "type": "string",
+    "default": ""
+  },
   "measure_import_cost": {
     "description": "统计各插件的导入成本（推荐保持开启）",
     "hint": "在插件构造函数里给 builtins.__import__ 包一层，记录每个模块首次导入前后的 RSS 差和耗时，AstrBot 加载完成后立刻卸载。单次首导入约 2 微秒，启动期约 3400 次首导入合计 30 毫秒以内，不追踪任何内存分配。注意：只能覆盖 MemoryScope 之后加载的插件；运行时安装/重载本插件时这项无效，需重启 AstrBot 才有完整数据。",
@@ -83,9 +101,9 @@
   },
   "deep_scan_interval_samples": {
     "description": "每隔多少次采样自动跑一次引用图扫描",
-    "hint": "0 表示只在手动点击或 /mem deep 时才扫。默认 5，配合 60 秒采样间隔约等于每 5 分钟一次；插件的保留量以分钟为尺度变化，扫得更频繁只会白烧 CPU。重启后的第一次会提前到第 2 个采样点，避免仪表盘长时间空白。",
+    "hint": "默认 0，只在手动点击或 /mem deep 时扫描，避免持续影响机器人响应。连接独立后端时强制使用手动模式。",
     "type": "int",
-    "default": 5
+    "default": 0
   },
   "deep_scan_slice_ms": {
     "description": "扫描时间切片长度（毫秒）",

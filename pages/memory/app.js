@@ -13,7 +13,7 @@ const STORE_AUTO = "memoryscope.auto";
 const STORE_TAB = "memoryscope.tab";
 const STORE_SORT = "memoryscope.sort";
 
-const TABS = ["overview", "plugins", "imports", "audit", "census", "alerts", "help"];
+const TABS = ["observer", "overview", "plugins", "imports", "audit", "census", "alerts", "help"];
 const SKINS = [
   { id: "auto", label: "跟随 Dashboard" },
   { id: "dark", label: "深色" },
@@ -355,12 +355,14 @@ function setTab(name) {
   for (const panel of document.querySelectorAll(".panel")) {
     panel.classList.toggle("is-active", panel.id === "panel-" + state.tab);
   }
+  if (state.tab === "observer") window.dispatchEvent(new Event("memoryscope:observer"));
 }
 
 function setAction(action) {
   state.action = action;
   state.busy = Boolean(action);
   for (const button of document.querySelectorAll("button")) {
+    if (button.closest("#observer-root")) continue;
     if (button.id === "drawer-close") continue;
     if (button.classList.contains("nav-btn")) continue;
     button.disabled = Boolean(action) && button.id !== "btn-refresh";
@@ -1666,6 +1668,10 @@ function setReport(report) {
 }
 
 async function refresh(options) {
+  if (state.tab === "observer") {
+    if (window.MemoryScopeObserver) await window.MemoryScopeObserver.refresh();
+    return;
+  }
   const opts = options || {};
   if (state.busy && !opts.allowBusy) return;
   setAction("refresh");
@@ -1673,7 +1679,7 @@ async function refresh(options) {
     // A normal refresh must stay cheap: one /proc read plus cached probe
     // results.  The expensive one-off probes are explicit buttons, and the
     // backend keeps their last result so the panels stay populated.
-    const params = { sample: "1", census: "0", audit: "0" };
+    const params = { sample: "0", census: "0", audit: "0" };
     if (opts.deep) params.deep = "1";
     setReport(await apiGet("plugins", params));
     const rest = await Promise.all([
@@ -2040,7 +2046,7 @@ async function main() {
   applyStaticText();
   applySkin();
   bindEvents();
-  gotoTab(readStore(STORE_TAB, "overview"));
+  gotoTab(readStore(STORE_TAB, "observer"));
   renderHelp();
 
   const contextHandler = function () {

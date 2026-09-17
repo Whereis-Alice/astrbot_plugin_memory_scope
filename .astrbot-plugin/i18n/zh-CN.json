@@ -309,7 +309,8 @@
         "help": "口径说明",
         "imports": "导入成本",
         "overview": "总览",
-        "plugins": "插件"
+        "plugins": "插件",
+        "observer": "服务器观察"
       },
       "table": {
         "censusHint": "对象普查是按类型模块归属的浅层估算；点击一行查看导入、对象类型和引用图结果。",

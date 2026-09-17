@@ -282,7 +282,7 @@ def test_overview_contains_process_settings_and_history(api):
     # travel with the overview payload.
     assert payload["settings"]["proc_smaps_enabled"] is True
     assert payload["settings"]["proc_smaps_min_interval_seconds"] == 30.0
-    assert payload["settings"]["deep_scan_interval_samples"] == 5
+    assert payload["settings"]["deep_scan_interval_samples"] == 0
     assert payload["settings"]["deep_scan_slice_ms"] == 15
     assert payload["settings"]["deep_scan_duty_percent"] == 25
     assert payload["history"] == {
