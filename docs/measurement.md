@@ -50,4 +50,3 @@ python3 tools/benchmark_service.py --config /etc/memoryscope/observer.json \
 ```
 
 配置 `cgroup` 可观察 Docker 容器的 cgroup v2 路径，采集器运行在宿主机；容器重建后可能需要更新路径。**自动重启实验仅支持 systemd**。容器内部的早期探针涉及 PID 命名空间与事件通道，尚未自动适配。
-

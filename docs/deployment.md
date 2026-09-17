@@ -79,4 +79,3 @@ AstrBot 内嵌页面继承 Dashboard 登录态，token 留在插件服务端。�
 恢复原启动方式：备份并移走本工具创建的 `90-memoryscope.conf`，执行 `systemctl daemon-reload`，再重启 AstrBot。不要使用可能移除其他 drop-in 的 `systemctl revert`。历史保留在 `/var/lib/memoryscope`。
 
 后端日志：`journalctl -u memoryscope`。
-
