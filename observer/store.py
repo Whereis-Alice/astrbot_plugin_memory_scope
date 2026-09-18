@@ -42,6 +42,8 @@ class Store:
             CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY, run TEXT, ts REAL, payload BLOB);
             CREATE INDEX IF NOT EXISTS event_run ON events(run, ts);
             CREATE TABLE IF NOT EXISTS jobs(id TEXT PRIMARY KEY, ts REAL, payload BLOB);
+            CREATE TABLE IF NOT EXISTS diagnostics(run TEXT PRIMARY KEY, ts REAL, payload BLOB);
+            CREATE INDEX IF NOT EXISTS diagnostic_ts ON diagnostics(ts);
         """)
         self.db.commit()
         self.dropped = 0
@@ -132,6 +134,33 @@ class Store:
             ).fetchall()
         return [unpack(row[0]) for row in rows]
 
+    def save_diagnostic(self, run_id: str, snapshot: dict, ts: float | None = None) -> None:
+        with self.lock, self.db:
+            self.db.execute(
+                "INSERT OR REPLACE INTO diagnostics VALUES (?,?,?)",
+                (run_id, float(ts or time.time()), pack(snapshot)),
+            )
+
+    def diagnostic(self, run_id: str) -> dict | None:
+        with self.lock:
+            row = self.db.execute(
+                "SELECT ts, payload FROM diagnostics WHERE run=?", (run_id,)
+            ).fetchone()
+        if not row:
+            return None
+        return {"ts": row[0], "snapshot": unpack(row[1])}
+
+    def latest_diagnostic(self) -> dict | None:
+        """Return the newest saved snapshot, even before a fresh run exists."""
+
+        with self.lock:
+            row = self.db.execute(
+                "SELECT run, ts, payload FROM diagnostics ORDER BY ts DESC LIMIT 1"
+            ).fetchone()
+        if not row:
+            return None
+        return {"run_id": row[0], "ts": row[1], "snapshot": unpack(row[2])}
+
     def prune(self, force=False) -> None:
         with self.lock:
             if not force and time.monotonic() - self._pruned < 60:
@@ -147,6 +176,7 @@ class Store:
                         (keep,),
                     )
                 self.db.execute("DELETE FROM runs WHERE ts<?", (cutoff,))
+                self.db.execute("DELETE FROM diagnostics WHERE ts<?", (cutoff,))
                 self.db.execute(
                     "DELETE FROM jobs WHERE id IN (SELECT id FROM jobs ORDER BY ts DESC LIMIT -1 OFFSET 100)"
                 )

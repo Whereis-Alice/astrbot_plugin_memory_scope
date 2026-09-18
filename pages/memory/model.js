@@ -68,6 +68,10 @@ export function duration(ms) {
 }
 export function pluginRows(overview = {}, report = {}, local = {}) {
   const rows = new Map();
+  const snapshot = local.diagnostic_snapshot || {};
+  const snapshotById = new Map(
+    (snapshot.plugins || []).map((item) => [item.root_dir_name || item.name, item]),
+  );
   for (const item of overview.run?.inventory || []) {
     const id = item.root_dir_name || item.import_key || item.name;
     if (id) rows.set(id, { ...item, id, phases: [] });
@@ -82,12 +86,18 @@ export function pluginRows(overview = {}, report = {}, local = {}) {
       (r) => r.id === id || r.name === item.name,
     );
     const key = match?.id || id;
+    const diagnostic =
+      item.diagnostic ||
+      snapshotById.get(item.root_dir_name || item.name) ||
+      snapshotById.get(key) ||
+      null;
     if (key)
       rows.set(key, {
         ...rows.get(key),
         ...(!match ? item : {}),
         id: key,
         local: item,
+        diagnostic,
       });
   }
   return [...rows.values()].map((row) => {
@@ -95,6 +105,7 @@ export function pluginRows(overview = {}, report = {}, local = {}) {
     const values = phases.map((p) => p.process_rss_swap_delta).filter(finite);
     return {
       ...row,
+      diagnostic: row.diagnostic || snapshotById.get(row.id) || null,
       label:
         row.display_name || row.name || row.id.replace(/^astrbot_plugin_/, ""),
       phases,

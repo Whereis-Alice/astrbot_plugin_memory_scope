@@ -11,7 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from core.collector import MemoryCollector, Settings
+from core.collector import AUTO_DIAGNOSTIC_LIMITS, MemoryCollector, Settings
 from core.import_cost import PackageCost, PluginImportCost, reset_ledger
 from core.object_census import CensusResult, PluginCensus, TypeStat
 from core.proc_memory import SmapsRollupReader
@@ -229,6 +229,47 @@ def test_deep_scan_is_opt_in_per_request_and_reused(tmp_path):
     reused = run(collector.build_report(deep=False, record_sample=False))
     assert reused["deep_meta"]["fresh"] is False
     assert reused["plugins"][0]["retained"] == report["plugins"][0]["retained"]
+
+
+def test_automatic_diagnostics_never_runs_census_and_uses_small_scan_budget(
+    tmp_path, monkeypatch
+):
+    meta, _module, _star = make_plugin(tmp_path, "plugin_auto", payload_size=20_000)
+    collector = build_collector(
+        [meta],
+        census_enabled=True,
+        deep_scan_enabled=True,
+        dep_audit_enabled=False,
+    )
+    original = collector._collect_blocking
+    captured = {}
+
+    def wrapped(*args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(collector, "_collect_blocking", wrapped)
+    report = run(collector.automatic_diagnostics())
+
+    assert captured["args"][1] is False  # census is explicitly opt-in
+    assert captured["args"][3] is AUTO_DIAGNOSTIC_LIMITS
+    assert report["census_meta"] is None
+    assert report["diagnostic_snapshot"]["source"] == "automatic"
+
+
+def test_diagnostic_snapshot_can_be_restored_after_collector_reload(tmp_path):
+    meta, module, star = make_plugin(tmp_path, "plugin_restore", payload_size=30_000)
+    star.cache = module.CACHE
+    first = build_collector([meta], deep_scan_enabled=True, dep_audit_enabled=False)
+    snapshot = run(first.build_report(deep=True, record_sample=False))["diagnostic_snapshot"]
+
+    restored = build_collector([meta], deep_scan_enabled=True, dep_audit_enabled=False)
+    restored.load_diagnostic_snapshot(snapshot)
+    report = run(restored.build_report(record_sample=False))
+
+    assert report["plugins"][0]["retained"]["total_bytes"] > 0
+    assert report["diagnostic_snapshot"] == snapshot
 
 
 def test_force_gc_returns_rss_measurements():

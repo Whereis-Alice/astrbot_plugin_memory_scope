@@ -39,6 +39,15 @@ _PROC_STATUS_FIELDS = {
     "VmSwap": "swap_bytes",
 }
 
+AUTO_DIAGNOSTIC_LIMITS = ScanLimits(
+    max_objects_per_plugin=30_000,
+    max_objects_total=100_000,
+    time_budget_ms=1_000,
+    max_depth=40,
+    slice_ms=5,
+    duty_percent=15,
+)
+
 
 def _read_proc_status() -> dict[str, int]:
     """Read cheap per-process memory counters on Linux.
@@ -127,6 +136,8 @@ class Settings:
     deep_scan_slice_ms: int = 15
     #: Share of wall time the scan may occupy while it runs.
     deep_scan_duty_percent: int = 25
+    auto_diagnostics_enabled: bool = True
+    auto_diagnostics_interval_minutes: int = 15
     #: Read /proc/self/smaps_rollup for Pss and SwapPss.
     proc_smaps_enabled: bool = True
     proc_smaps_min_interval_seconds: float = 30.0
@@ -208,6 +219,10 @@ class Settings:
             ),
             deep_scan_slice_ms=as_int("deep_scan_slice_ms", 15, 1, 200),
             deep_scan_duty_percent=as_int("deep_scan_duty_percent", 25, 5, 100),
+            auto_diagnostics_enabled=as_bool("auto_diagnostics_enabled", True),
+            auto_diagnostics_interval_minutes=as_int(
+                "auto_diagnostics_interval_minutes", 15, 5, 1440,
+            ),
             proc_smaps_enabled=as_bool("proc_smaps_enabled", True),
             proc_smaps_min_interval_seconds=as_float(
                 "proc_smaps_min_interval_seconds", 30.0,
@@ -267,6 +282,8 @@ class MemoryCollector:
         self._last_deep_coverage: dict[str, Any] | None = None
         self._samples_since_deep = 0
         self._deep_rounds = 0
+        self._diagnostic_snapshot: dict[str, Any] | None = None
+        self.stop_scan = threading.Event()
         # Alerts fired by the most recent recorded sample, consumed by main.py.
         self.last_alerts: list[Any] = []
         if not defer_registry:
@@ -318,7 +335,31 @@ class MemoryCollector:
     def close(self) -> None:
         """Release the tiny procfs handle held by the RSS reader."""
 
+        self.stop_scan.set()
         self.rss.close()
+
+    def load_diagnostic_snapshot(self, snapshot: Any) -> None:
+        """Restore the last compact diagnostic result after a plugin reload."""
+
+        if not isinstance(snapshot, dict) or not snapshot.get("generated_at"):
+            return
+        self._diagnostic_snapshot = snapshot
+        deep_meta = snapshot.get("deep_meta") or {}
+        self._last_deep_ts = float(deep_meta.get("generated_at") or 0)
+        self._last_deep_elapsed = float(deep_meta.get("elapsed_ms") or 0)
+        self._last_deep_truncated = bool(deep_meta.get("truncated"))
+        self._last_deep_coverage = deep_meta.get("coverage") or None
+        self._deep_rounds = int(deep_meta.get("rounds") or 0)
+        self._last_deep = {
+            str(item.get("name")): dict(item.get("retained") or {})
+            for item in snapshot.get("plugins", [])
+            if isinstance(item, dict) and item.get("name") and item.get("retained")
+        }
+
+    def diagnostic_snapshot(self) -> dict[str, Any] | None:
+        """Return the most recent automatic or manual diagnostic result."""
+
+        return self._diagnostic_snapshot
 
     def import_hook_status(self) -> dict[str, Any]:
         """Ledger status without the package table, for the process block."""
@@ -416,7 +457,7 @@ class MemoryCollector:
     # ------------------------------------------------------------------
     # blocking work (executed in a worker thread)
     # ------------------------------------------------------------------
-    def _deep_scan(self) -> dict[str, dict[str, Any]]:
+    def _deep_scan(self, limits: ScanLimits | None = None) -> dict[str, dict[str, Any]]:
         entries = [
             entry
             for entry in self.registry.entries
@@ -424,6 +465,10 @@ class MemoryCollector:
         ]
         if not entries:
             self._last_deep = {}
+            self._last_deep_ts = time.time()
+            self._last_deep_elapsed = 0.0
+            self._last_deep_truncated = False
+            self._last_deep_coverage = {}
             self._samples_since_deep = 0
             return {}
 
@@ -451,16 +496,18 @@ class MemoryCollector:
             if roots:
                 roots_by_plugin[entry.name] = roots
 
+        self.stop_scan.clear()
         report = self.scanner.scan(
             roots_by_plugin,
             denylist,
-            ScanLimits(
+            limits or ScanLimits(
                 max_objects_per_plugin=self.settings.deep_scan_max_objects,
                 max_objects_total=self.settings.deep_scan_max_objects_total,
                 time_budget_ms=self.settings.deep_scan_time_budget_ms,
                 slice_ms=self.settings.deep_scan_slice_ms,
                 duty_percent=self.settings.deep_scan_duty_percent,
             ),
+            cancel=self.stop_scan,
         )
         self._last_deep = {
             name: result.to_dict() for name, result in report.results.items()
@@ -492,6 +539,7 @@ class MemoryCollector:
         deep: bool,
         census: bool,
         audit: bool,
+        deep_limits: ScanLimits | None = None,
     ) -> dict[str, Any]:
         # Refresh the 5 ms procfs read here, in the worker thread, so that
         # process_stats() only ever touches a warm cache on the event loop.
@@ -501,7 +549,9 @@ class MemoryCollector:
             self._census_blocking()
         if audit:
             self._audit_blocking()
-        deep_results = self._deep_scan() if deep else dict(self._last_deep)
+        deep_results = (
+            self._deep_scan(deep_limits) if deep_limits is not None else self._deep_scan()
+        ) if deep else dict(self._last_deep)
         return {
             "census": self._census,
             "audit": self._audit,
@@ -526,6 +576,8 @@ class MemoryCollector:
         detail_for: str | None = None,
         census: bool | None = None,
         audit: bool | None = None,
+        diagnostic_source: str = "manual",
+        deep_limits: ScanLimits | None = None,
         record_sample: bool = True,
     ) -> dict[str, Any]:
         """Build the payload.
@@ -552,6 +604,7 @@ class MemoryCollector:
                 deep,
                 run_census_now,
                 run_audit_now,
+                deep_limits,
             )
             process = self.process_stats(
                 include_object_count=deep and self.settings.include_object_count,
@@ -659,6 +712,16 @@ class MemoryCollector:
                 "notes": self._build_notes(census_result, audit_result, rows),
                 "self_plugin": self.self_plugin_name,
             }
+            if deep or run_census_now or run_audit_now:
+                self._diagnostic_snapshot = self._make_diagnostic_snapshot(
+                    payload["generated_at"],
+                    diagnostic_source,
+                    rows,
+                    payload["census_meta"],
+                    payload["audit_meta"],
+                    payload["deep_meta"],
+                )
+            payload["diagnostic_snapshot"] = self._diagnostic_snapshot
             if detail_for is not None:
                 payload["detail"] = self._build_detail(
                     detail_for, audit_result, census_result, rows,
@@ -767,7 +830,17 @@ class MemoryCollector:
             audit = audits.get(entry.name)
             seen = census_plugins.get(entry.name)
             census_bytes = seen.bytes if seen is not None else 0
-            retained = deep_results.get(entry.name)
+            saved = next(
+                (
+                    item
+                    for item in (self._diagnostic_snapshot or {}).get("plugins", [])
+                    if isinstance(item, dict) and item.get("name") == entry.name
+                ),
+                None,
+            )
+            retained = deep_results.get(entry.name) or (
+                saved.get("retained") if saved else None
+            )
             retained_bytes = int((retained or {}).get("total_bytes") or 0)
             row: dict[str, Any] = {
                 **entry.to_dict(),
@@ -822,6 +895,41 @@ class MemoryCollector:
             reverse=True,
         )
         return rows
+
+    @staticmethod
+    def _make_diagnostic_snapshot(
+        generated_at: float,
+        source: str,
+        rows: list[dict[str, Any]],
+        census_meta: dict[str, Any] | None,
+        audit_meta: dict[str, Any] | None,
+        deep_meta: dict[str, Any],
+    ) -> dict[str, Any]:
+        plugins = []
+        for row in rows:
+            plugins.append(
+                {
+                    "name": row.get("name"),
+                    "display_name": row.get("display_name"),
+                    "root_dir_name": row.get("root_dir_name"),
+                    "census_bytes": row.get("census_bytes", 0),
+                    "census_objects": row.get("census_objects", 0),
+                    "census_measured": bool(row.get("census_measured")),
+                    "retained": row.get("retained"),
+                    "retained_bytes": row.get("retained_bytes"),
+                    "audit_findings": row.get("audit_findings", 0),
+                    "audit_measured": bool(row.get("audit_measured")),
+                    "audit_error": row.get("audit_error"),
+                }
+            )
+        return {
+            "generated_at": generated_at,
+            "source": source,
+            "plugins": plugins,
+            "census_meta": census_meta,
+            "audit_meta": audit_meta,
+            "deep_meta": deep_meta,
+        }
 
     def _build_packages(
         self,
@@ -986,6 +1094,24 @@ class MemoryCollector:
         # the history prevents clicking the audit button from looking like an
         # extra RSS tick in the trend chart.
         return await self.build_report(audit=True, record_sample=False)
+
+    async def automatic_diagnostics(self) -> dict[str, Any]:
+        """Run a conservative background diagnostic pass.
+
+        Automatic checks never run the full object census.  The retained graph
+        gets a small one second CPU budget and the dependency audit reuses its
+        source cache, so the page has fresh evidence without turning ordinary
+        sampling into a stop-the-world scan.
+        """
+
+        return await self.build_report(
+            deep=self.settings.deep_scan_enabled,
+            census=False,
+            audit=self.settings.dep_audit_enabled,
+            diagnostic_source="automatic",
+            deep_limits=AUTO_DIAGNOSTIC_LIMITS,
+            record_sample=False,
+        )
 
     async def force_gc(self) -> dict[str, Any]:
         before = self.read_rss()

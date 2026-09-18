@@ -87,6 +87,26 @@ def test_history_bounded_and_run_identity_preserved(tmp_path):
         store.close()
 
 
+def test_diagnostic_snapshot_round_trips_in_persistent_store(tmp_path):
+    store = Store(tmp_path / "history.db")
+    snapshot = {
+        "generated_at": 123.0,
+        "source": "automatic",
+        "plugins": [{"name": "example", "retained_bytes": 4096}],
+    }
+    try:
+        store.save_diagnostic("run-1", snapshot, 124.0)
+        assert store.diagnostic("run-1") == {"ts": 124.0, "snapshot": snapshot}
+        assert store.latest_diagnostic() == {
+            "run_id": "run-1",
+            "ts": 124.0,
+            "snapshot": snapshot,
+        }
+        assert store.diagnostic("missing") is None
+    finally:
+        store.close()
+
+
 def event(kind, seq, ts, **extra):
     return dict(kind=kind, seq=seq, ts=ts, monotonic_ns=int(ts * 1e9), **extra)
 
@@ -312,6 +332,26 @@ def test_http_requires_token_and_never_returns_secret(tmp_path):
 
     config = Config(token="test-secret-" * 4, state_dir=str(tmp_path), port=0)
     observer = Observer(config)
+    run = {
+        "id": "diagnostic-run",
+        "started_at": time.time(),
+        "pid": 1,
+        "start_ticks": 1,
+    }
+    observer.current_run = run
+    observer.store.save_run(run)
+    observer.store.save_diagnostic(
+        run["id"],
+        {
+            "generated_at": 123.0,
+            "source": "automatic",
+            "plugins": [{"name": "example", "retained_bytes": 4096}],
+        },
+        124.0,
+    )
+    observer.current_run = None
+    assert observer.diagnostics()["run_id"] == run["id"]
+    observer.current_run = run
     server = make_server(observer)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -326,6 +366,12 @@ def test_http_requires_token_and_never_returns_secret(tmp_path):
         raw = request.urlopen(req).read().decode()
         assert config.token not in raw
         assert json.loads(raw)["data"]["source"] == "independent_observer"
+        req = request.Request(
+            url + "/api/diagnostics",
+            headers={"Authorization": "Bearer " + config.token},
+        )
+        diagnostics = json.loads(request.urlopen(req).read())
+        assert diagnostics["data"]["snapshot"]["source"] == "automatic"
         req = request.Request(
             url + "/api/experiments",
             data=b'{"confirm_restart":true}',

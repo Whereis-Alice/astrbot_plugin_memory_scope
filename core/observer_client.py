@@ -158,6 +158,24 @@ class ObserverClient:
             },
         )
 
+    async def publish_diagnostics(self, snapshot):
+        if not self.configured or not isinstance(snapshot, dict):
+            return
+        try:
+            raw = Path("/proc/self/stat").read_text()
+            ticks = int(raw[raw.rindex(")") + 2 :].split()[19])
+        except (OSError, IndexError, ValueError):
+            return
+        await self.post(
+            "diagnostics",
+            {
+                "pid": os.getpid(),
+                "start_ticks": ticks,
+                "ts": time.time(),
+                "snapshot": snapshot,
+            },
+        )
+
 
 def render_observer(data: dict) -> str:
     def size(value):

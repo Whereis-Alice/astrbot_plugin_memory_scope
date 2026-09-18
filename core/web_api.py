@@ -137,12 +137,17 @@ class MemoryScopeWebApi:
     """Registers and serves the plugin page endpoints."""
 
     def __init__(
-        self, plugin_name: str, collector: MemoryCollector, preference_store=None
+        self,
+        plugin_name: str,
+        collector: MemoryCollector,
+        preference_store=None,
+        diagnostic_persistor=None,
     ) -> None:
         self.plugin_name = plugin_name
         self.collector = collector
         self.routes: list[str] = []
         self.preference_store = preference_store
+        self.diagnostic_persistor = diagnostic_persistor
 
     @property
     def available(self) -> bool:
@@ -384,10 +389,13 @@ class MemoryScopeWebApi:
         """
 
         report = await self.collector.census_now()
+        if self.diagnostic_persistor is not None:
+            await self.diagnostic_persistor()
         return ok(
             {
                 "generated_at": report["generated_at"],
                 "census_meta": report.get("census_meta"),
+                "diagnostic_snapshot": report.get("diagnostic_snapshot"),
                 "census_buckets": report.get("census_buckets"),
                 "plugins": report.get("plugins"),
                 "totals": report.get("totals"),
@@ -399,10 +407,13 @@ class MemoryScopeWebApi:
         """Re-scan plugin sources for heavy module-level imports."""
 
         report = await self.collector.audit_now()
+        if self.diagnostic_persistor is not None:
+            await self.diagnostic_persistor()
         return ok(
             {
                 "generated_at": report["generated_at"],
                 "audit_meta": report.get("audit_meta"),
+                "diagnostic_snapshot": report.get("diagnostic_snapshot"),
                 "opportunities": report.get("opportunities"),
                 "plugins": report.get("plugins"),
                 "totals": report.get("totals"),
@@ -448,6 +459,8 @@ class MemoryScopeWebApi:
         report = await self.collector.build_report(
             deep=True, census=False, audit=False, record_sample=False
         )
+        if self.diagnostic_persistor is not None:
+            await self.diagnostic_persistor()
         return ok(report)
 
     async def post_baseline(self) -> Any:

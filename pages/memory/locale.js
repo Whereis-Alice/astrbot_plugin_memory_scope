@@ -436,6 +436,18 @@ export const messages = {
     "加载耗时",
     "Load time"
   ],
+  "诊断快照": [
+    "诊断快照",
+    "Diagnostic snapshot"
+  ],
+  "引用图": [
+    "引用图",
+    "Retained"
+  ],
+  "对象": [
+    "对象",
+    "Objects"
+  ],
   "证据": [
     "证据",
     "Evidence"
@@ -663,6 +675,10 @@ export const messages = {
   "独立页面无法访问进程内对象。请在 AstrBot 的 MemoryScope 插件页执行诊断。": [
     "独立页面无法访问进程内对象。请在 AstrBot 的 MemoryScope 插件页执行诊断。",
     "The standalone page cannot access in-process objects. Run diagnostics from the MemoryScope page in AstrBot."
+  ],
+  "独立页面显示后端保存的最近诊断；要立即执行扫描，请在 AstrBot 插件页操作。": [
+    "独立页面显示后端保存的最近诊断；要立即执行扫描，请在 AstrBot 插件页操作。",
+    "The standalone page shows the latest saved diagnostics. Run a scan from the AstrBot plugin page for an immediate update."
   ],
   "按需执行": [
     "按需执行",

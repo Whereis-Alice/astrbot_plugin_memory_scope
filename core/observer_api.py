@@ -26,7 +26,15 @@ class ObserverApi:
         register(
             f"/{plugin_id}/observer_status", status, ["GET"], "MemoryScope 数据源状态"
         )
-        for name in ("overview", "runs", "run", "trend", "compare", "experiments"):
+        for name in (
+            "overview",
+            "runs",
+            "run",
+            "trend",
+            "compare",
+            "experiments",
+            "diagnostics",
+        ):
 
             def make_handler(endpoint):
                 async def handler():

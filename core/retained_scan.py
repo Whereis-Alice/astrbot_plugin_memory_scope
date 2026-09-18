@@ -298,6 +298,7 @@ def _walk(
     max_objects: int,
     max_depth: int,
     pacer: _Pacer,
+    cancel=None,
 ) -> tuple[dict[int, int], bool]:
     """Breadth-limited reference walk returning a mapping of id -> size."""
 
@@ -307,6 +308,9 @@ def _walk(
     checks = 0
 
     while stack:
+        if cancel is not None and cancel.is_set():
+            truncated = True
+            break
         checks += 1
         if checks % 512 == 0 and pacer.tick():
             truncated = True
@@ -359,6 +363,7 @@ class RetainedScanner:
         roots_by_plugin: dict[str, list[Any]],
         denylist: set[int],
         limits: ScanLimits | None = None,
+        cancel=None,
     ) -> ScanReport:
         """Measure retained size per plugin and split exclusive vs shared."""
 
@@ -395,8 +400,10 @@ class RetainedScanner:
         credit = 0
 
         for name in order:
+            if cancel is not None and cancel.is_set():
+                truncated_any = True
             allowance = min(per_plugin_cap, fair + credit, budget_left)
-            if allowance <= 0 or pacer.exhausted:
+            if allowance <= 0 or pacer.exhausted or (cancel is not None and cancel.is_set()):
                 truncated_any = True
                 per_plugin[name] = {}
                 report.results[name] = RetainedResult(truncated=True)
@@ -407,6 +414,7 @@ class RetainedScanner:
                 allowance,
                 limits.max_depth,
                 pacer,
+                cancel,
             )
             truncated_any = truncated_any or truncated
             per_plugin[name] = seen

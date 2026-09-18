@@ -125,6 +125,11 @@ def make_server(observer, assets: Path | None = None):
                     result = compare(groups)
                 elif url.path == "/api/experiments":
                     result = observer.store.jobs()
+                elif url.path == "/api/diagnostics":
+                    run_id = query.get(
+                        "id", [(observer.current_run or {}).get("id", "")]
+                    )[0]
+                    result = observer.diagnostics(run_id)
                 else:
                     return self.send(404, {"error": "Not found"})
                 self.send(200, {"status": "ok", "data": result})
@@ -146,6 +151,13 @@ def make_server(observer, assets: Path | None = None):
                 path = urlsplit(self.path).path
                 if path == "/api/inventory":
                     event = dict(payload, kind="inventory")
+                    result = {
+                        "accepted": observer.accept_event(
+                            {"token": observer.config.token, "event": event}
+                        )
+                    }
+                elif path == "/api/diagnostics":
+                    event = dict(payload, kind="diagnostic")
                     result = {
                         "accepted": observer.accept_event(
                             {"token": observer.config.token, "event": event}

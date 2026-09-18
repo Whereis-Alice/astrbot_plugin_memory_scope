@@ -367,7 +367,11 @@ function schedule() {
         !$("confirm").open &&
         $("drawer").hidden
       )
-        refresh();
+        {
+          refresh();
+          if (embedded && (S.tab === "plugins" || S.tab === "diagnostics"))
+            loadDiagnostics(true);
+        }
     }, seconds * 1000);
 }
 function title() {
@@ -405,7 +409,7 @@ function navigate(tab) {
   history.replaceState(null, "", "#" + tab);
   title();
   render(true);
-  if (tab === "diagnostics") loadDiagnostics();
+  if (tab === "diagnostics" || tab === "plugins") loadDiagnostics();
   if (!S.busy && S.mode && !S.overview) refresh();
 }
 function render(force = false) {
@@ -547,7 +551,7 @@ function pluginTable(items, compact = false) {
         : t("插件清单通常每分钟同步；未接入启动探针时，启动增量会保持未知。"),
     );
   const max = Math.max(...items.map((p) => Math.abs(p.delta || 0)), 1);
-  return `<div class="table-wrap"><table><thead><tr><th>${t("插件")}</th>${compact ? "" : `<th>${t("状态")}</th>`}<th>${t("启动增量")} <small>RSS + Swap</small></th><th>${t("加载耗时")}</th>${compact ? "" : `<th>${t("证据")}</th>`}</tr></thead><tbody>${items.map((p) => `<tr><td><button class="plugin-link" data-plugin="${esc(p.id)}" title="${esc(p.label)}">${esc(p.label)}</button><span class="sub" title="${esc(p.id)}">${esc(p.id)}</span></td>${compact ? "" : `<td>${tag(p.failed ? t("加载失败") : p.activated === true ? t("已启用") : p.activated === false ? t("已停用") : t("未同步"), p.failed ? "bad" : p.activated !== true ? "neutral" : "")}</td>`}<td class="bar-cell mono num">${signedSize(p.delta)}${p.partial ? " *" : ""}${finite(p.delta) ? `<svg class="mini-track" width="120" height="3" viewBox="0 0 120 3" aria-hidden="true"><rect width="${(Math.abs(p.delta) / max) * 120}" height="3" fill="var(--accent)"/></svg>` : ""}</td><td class="mono num">${duration(p.duration)}</td>${compact ? "" : `<td>${p.phases.length ? tag(p.phases.length + " " + t("阶段")) : tag(t("未测量"), "neutral")}</td>`}</tr>`).join("")}</tbody></table></div>`;
+  return `<div class="table-wrap"><table><thead><tr><th>${t("插件")}</th>${compact ? "" : `<th>${t("状态")}</th>`}<th>${t("启动增量")} <small>RSS + Swap</small></th><th>${t("加载耗时")}</th><th>${t("诊断快照")}</th>${compact ? "" : `<th>${t("证据")}</th>`}</tr></thead><tbody>${items.map((p) => { const d = p.diagnostic || {}; const retained = d.retained_bytes ?? p.retained_bytes; const census = d.census_bytes ?? p.census_bytes; const measured = finite(retained) || d.census_measured || p.census_measured; const diag = measured ? `<span class="sub">${finite(retained) ? t("引用图") + " " + size(retained) : t("引用图") + " —"}${d.census_measured || p.census_measured ? " · " + t("对象") + " " + size(census) : ""}</span>` : tag(t("未测量"), "neutral"); return `<tr><td><button class="plugin-link" data-plugin="${esc(p.id)}" title="${esc(p.label)}">${esc(p.label)}</button><span class="sub" title="${esc(p.id)}">${esc(p.id)}</span></td>${compact ? "" : `<td>${tag(p.failed ? t("加载失败") : p.activated === true ? t("已启用") : p.activated === false ? t("已停用") : t("未同步"), p.failed ? "bad" : p.activated !== true ? "neutral" : "")}</td>`}<td class="bar-cell mono num">${signedSize(p.delta)}${p.partial ? " *" : ""}${finite(p.delta) ? `<svg class="mini-track" width="120" height="3" viewBox="0 0 120 3" aria-hidden="true"><rect width="${(Math.abs(p.delta) / max) * 120}" height="3" fill="var(--accent)"/></svg>` : ""}</td><td class="mono num">${duration(p.duration)}</td><td title="${esc(S.local.diagnostic_snapshot?.generated_at ? stamp(S.local.diagnostic_snapshot.generated_at, true) : "")}">${diag}</td>${compact ? "" : `<td>${p.phases.length ? tag(p.phases.length + " " + t("阶段")) : tag(t("未测量"), "neutral")}</td>`}</tr>`; }).join("")}</tbody></table></div>`;
 }
 function renderPlugins(build) {
   if (build) {
@@ -715,16 +719,24 @@ function renderPhases(report) {
   $("phase-pager").innerHTML = pager("phase", S.phasePage, phases.length, 30);
 }
 async function loadDiagnostics(force = false) {
-  if (!embedded || (localLoaded && !force)) return;
+  if (localLoaded && !force) return;
   try {
-    const [report, alerts] = await Promise.all([
-      api("plugins", { sample: 0, census: 0, audit: 0, deep: 0 }, "GET", true),
-      api("alerts", { limit: 30 }, "GET", true),
-    ]);
-    S.local = report;
-    S.alerts = alerts.alerts || [];
+    if (embedded) {
+      const [report, alerts] = await Promise.all([
+        api("plugins", { sample: 0, census: 0, audit: 0, deep: 0 }, "GET", true),
+        api("alerts", { limit: 30 }, "GET", true),
+      ]);
+      S.local = report;
+      S.alerts = alerts.alerts || [];
+    } else {
+      const result = await api("diagnostics");
+      S.local = result.snapshot || {};
+      S.local.diagnostic_snapshot = result.snapshot || null;
+      S.alerts = [];
+    }
     localLoaded = true;
     if (S.tab === "diagnostics") renderDiagnostics(true);
+    if (S.tab === "plugins") renderPlugins(false);
   } catch (e) {
     toast(t("本地诊断读取失败") + ": " + e.message);
     if (S.tab === "diagnostics")
@@ -757,7 +769,7 @@ function renderDiagnostics(build) {
     ],
   ];
   $("content").innerHTML =
-    `${!embedded ? `<div class="notice">${t("独立页面无法访问进程内对象。请在 AstrBot 的 MemoryScope 插件页执行诊断。")}</div>` : ""}<div class="diagnostic-grid">${tools.map(([id, label, desc, sym]) => `<section class="card tool-card" data-tool="${id}"><div class="tool-icon">${icon(sym)}</div><h2>${t(label)}</h2><p>${t(desc)}</p><span class="tool-status">${S.local[id === "audit" ? "audit_meta" : id === "census" ? "census_meta" : "deep_meta"]?.generated_at ? stamp(S.local[id === "audit" ? "audit_meta" : id === "census" ? "census_meta" : "deep_meta"].generated_at, true) : t("按需执行")}</span><button data-scan="${id}" ${!embedded || S.scanBusy ? "disabled" : ""}>${t("运行一次")}</button></section>`).join("")}</div><section class="card">${cardHead(t("诊断结果"), t("这里的对象估算不能与启动增量或 RSS 相加。"))}<div id="diagnostic-results"></div></section><div class="two-col section-gap"><section class="card">${cardHead(t("本地告警记录"), t("连接后端时不持续运行本地扫描，这不是服务器告警流。"))}<div class="card-body">${S.alerts.length ? S.alerts.map((a) => `<div class="job"><small>${stamp(a.ts, true)}</small><p>${esc(a.message)}</p></div>`).join("") : empty(t("暂无本地告警"))}</div></section><section class="card">${cardHead(t("进程维护"), t("GC 不保证降低 RSS；仅在排查问题时按需使用。"))}<div class="card-body"><button data-scan="gc" ${!embedded || S.scanBusy ? "disabled" : ""}>${t("运行垃圾回收")}</button>${note(t("导出报告可以保存当前证据，文件不包含连接凭据。"))}<button data-export class="quiet">${t("export")}</button></div></section></div>`;
+    `${!embedded ? `<div class="notice">${t("独立页面显示后端保存的最近诊断；要立即执行扫描，请在 AstrBot 插件页操作。")}</div>` : ""}<div class="diagnostic-grid">${tools.map(([id, label, desc, sym]) => `<section class="card tool-card" data-tool="${id}"><div class="tool-icon">${icon(sym)}</div><h2>${t(label)}</h2><p>${t(desc)}</p><span class="tool-status">${S.local[id === "audit" ? "audit_meta" : id === "census" ? "census_meta" : "deep_meta"]?.generated_at ? stamp(S.local[id === "audit" ? "audit_meta" : id === "census" ? "census_meta" : "deep_meta"].generated_at, true) : t("按需执行")}</span><button data-scan="${id}" ${!embedded || S.scanBusy ? "disabled" : ""}>${t("运行一次")}</button></section>`).join("")}</div><section class="card">${cardHead(t("诊断结果"), t("这里的对象估算不能与启动增量或 RSS 相加。"))}<div id="diagnostic-results"></div></section><div class="two-col section-gap"><section class="card">${cardHead(t("本地告警记录"), t("连接后端时不持续运行本地扫描，这不是服务器告警流。"))}<div class="card-body">${S.alerts.length ? S.alerts.map((a) => `<div class="job"><small>${stamp(a.ts, true)}</small><p>${esc(a.message)}</p></div>`).join("") : empty(t("暂无本地告警"))}</div></section><section class="card">${cardHead(t("进程维护"), t("GC 不保证降低 RSS；仅在排查问题时按需使用。"))}<div class="card-body"><button data-scan="gc" ${!embedded || S.scanBusy ? "disabled" : ""}>${t("运行垃圾回收")}</button>${note(t("导出报告可以保存当前证据，文件不包含连接凭据。"))}<button data-export class="quiet">${t("export")}</button></div></section></div>`;
   renderDiagnosticResult();
 }
 function renderDiagnosticResult() {
@@ -1202,7 +1214,7 @@ async function boot() {
     if (navs.some((n) => n[0] === tab)) S.tab = tab;
     await refresh();
     schedule();
-    if (S.tab === "diagnostics") loadDiagnostics();
+    if (S.tab === "diagnostics" || S.tab === "plugins") loadDiagnostics();
   } catch (e) {
     S.errors = [e.message];
     setNotice();

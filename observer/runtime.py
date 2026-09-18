@@ -248,14 +248,28 @@ class Observer:
                             )
                         }
                     )
+            elif event["kind"] == "diagnostic":
+                snapshot = event.get("snapshot")
+                if not isinstance(snapshot, dict) or len(snapshot) > 2000:
+                    return False
+                run["diagnostic_at"] = ts
+                run["diagnostic_source"] = snapshot.get("source", "unknown")
+                self.store.save_diagnostic(run["id"], snapshot, ts)
             if event["kind"] in {
                 "launch",
                 "inventory",
                 "probe_finished",
                 "child_spawn",
+                "diagnostic",
             }:
                 self.store.save_run(run)
-            self.store.append("events", run["id"], event)
+            event_record = dict(event)
+            if event_record.get("kind") == "diagnostic":
+                event_record.pop("snapshot", None)
+                event_record["plugin_count"] = len(
+                    (event.get("snapshot") or {}).get("plugins", [])
+                )
+            self.store.append("events", run["id"], event_record)
         return True
 
     def overview(self) -> dict:
@@ -329,6 +343,17 @@ class Observer:
         if not include_samples:
             result.pop("samples", None)
         return result
+
+    def diagnostics(self, run_id: str | None = None) -> dict:
+        selected = run_id or (self.current_run or {}).get("id", "")
+        saved = self.store.diagnostic(selected) if selected else None
+        if saved:
+            return {"run_id": selected, **saved}
+        if not run_id:
+            latest = self.store.latest_diagnostic()
+            if latest:
+                return latest
+        return {"run_id": selected or None, "snapshot": None}
 
     def trend(self, run_id: str, seconds: int = 3600) -> dict:
         run = self.store.run(run_id)

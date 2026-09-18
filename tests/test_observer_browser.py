@@ -271,7 +271,7 @@ def test_embedded_dashboard_uses_bridge_without_exposing_credentials(preview):
         page.get_by_role("button", name="示例图片插件", exact=True).wait_for()
         assert page.locator("#auth").is_hidden()
         assert token not in page.content()
-        assert not any(name == "plugins" for name, _, _ in calls)
+        assert any(name == "plugins" for name, _, _ in calls)
         page.locator('[data-go="diagnostics"]').click()
         page.wait_for_function(
             "document.querySelector('#diagnostic-results').textContent.includes('尚未运行诊断')"

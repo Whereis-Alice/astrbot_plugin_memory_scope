@@ -42,9 +42,10 @@ from .core.text_report import (
 from .core.web_api import MemoryScopeWebApi
 
 PLUGIN_ID = "astrbot_plugin_memory_scope"
-PLUGIN_VERSION = "4.1.2"
+PLUGIN_VERSION = "4.1.3"
 # Key used with the plugin KV store so history survives a reload.
 HISTORY_KEY = "history"
+DIAGNOSTIC_KEY = "diagnostic_snapshot"
 # Flush the ring buffer to the KV store every N samples instead of every sample.
 PERSIST_EVERY = 5
 PERSIST_KEEP = 240
@@ -53,6 +54,7 @@ PERSIST_KEEP = 240
 # sleep in practice expires only once the import phase is over.  That is also
 # what makes it a reliable "loading finished" signal for the hook handover.
 FIRST_SAMPLE_DELAY_SECONDS = 8.0
+DIAGNOSTIC_INITIAL_DELAY_SECONDS = 45.0
 
 
 @register(
@@ -72,6 +74,7 @@ class MemoryScopePlugin(Star):
         self.settings = Settings.from_config(config or {})
         self.observer = ObserverClient(config or {})
         self._inventory_task: asyncio.Task | None = None
+        self._diagnostic_task: asyncio.Task | None = None
         if self.observer.enabled:
             self.settings.measure_import_cost = False
             self.settings.deep_scan_interval_samples = 0
@@ -94,7 +97,10 @@ class MemoryScopePlugin(Star):
                 context, self.settings, PLUGIN_ID, defer_registry=self.observer.enabled
             )
             self.web_api = MemoryScopeWebApi(
-                PLUGIN_ID, self.collector, preference_store=self
+                PLUGIN_ID,
+                self.collector,
+                preference_store=self,
+                diagnostic_persistor=self._persist_diagnostics_for_web,
             )
             self._sampler_task: asyncio.Task[None] | None = None
             self._samples_since_persist = 0
@@ -129,8 +135,15 @@ class MemoryScopePlugin(Star):
     # ------------------------------------------------------------------
     async def initialize(self) -> None:
         await self._load_history()
+        await self._load_diagnostics()
         if self._sampler_task is None or self._sampler_task.done():
             self._sampler_task = asyncio.create_task(self._sampler_loop())
+        if (
+            self.observer.configured
+            and self.settings.auto_diagnostics_enabled
+            and (self._diagnostic_task is None or self._diagnostic_task.done())
+        ):
+            self._diagnostic_task = asyncio.create_task(self._diagnostic_loop())
         status = self.collector.import_hook_status()
         logger.info(
             "MemoryScope 已启动 · 导入成本钩子=%s（自身开销 %s）"
@@ -164,6 +177,12 @@ class MemoryScopePlugin(Star):
                 await task
             except (asyncio.CancelledError, Exception):  # noqa: BLE001
                 pass
+        diagnostic_task = self._diagnostic_task
+        self._diagnostic_task = None
+        if diagnostic_task is not None and not diagnostic_task.done():
+            diagnostic_task.cancel()
+            await asyncio.gather(diagnostic_task, return_exceptions=True)
+        await self._persist_diagnostics()
         await self._persist_history()
         # Never leave a wrapper on builtins.__import__ behind after a reload.
         ledger = self._ledger()
@@ -233,6 +252,58 @@ class MemoryScopePlugin(Star):
         except Exception as exc:  # noqa: BLE001
             logger.debug("MemoryScope 写入历史采样失败: %s", exc)
 
+    async def _load_diagnostics(self) -> None:
+        try:
+            payload = await self.get_kv_data(DIAGNOSTIC_KEY, None)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("MemoryScope 读取诊断快照失败: %s", exc)
+            return
+        self.collector.load_diagnostic_snapshot(payload)
+
+    async def _persist_diagnostics(self) -> None:
+        snapshot = self.collector.diagnostic_snapshot()
+        if not snapshot:
+            return
+        try:
+            await self.put_kv_data(DIAGNOSTIC_KEY, snapshot)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("MemoryScope 保存诊断快照失败: %s", exc)
+
+    async def _persist_diagnostics_for_web(self) -> None:
+        """Persist a manual scan and mirror it to the independent backend.
+
+        The ordinary persistence path is also used during plugin shutdown, where
+        an extra network request would only slow a reload.  WebUI actions are
+        explicit and should be visible in the standalone dashboard as well, so
+        they use this small opt-in mirror step.
+        """
+
+        await self._persist_diagnostics()
+        snapshot = self.collector.diagnostic_snapshot()
+        if self.observer.enabled and snapshot:
+            try:
+                await self.observer.publish_diagnostics(snapshot)
+            except ValueError as exc:
+                logger.debug("MemoryScope 同步诊断快照失败: %s", exc)
+
+    async def _diagnostic_loop(self) -> None:
+        await asyncio.sleep(DIAGNOSTIC_INITIAL_DELAY_SECONDS)
+        while True:
+            try:
+                report = await self.collector.automatic_diagnostics()
+                await self._persist_diagnostics()
+                if self.observer.enabled:
+                    await self.observer.publish_diagnostics(
+                        report.get("diagnostic_snapshot")
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("MemoryScope 自动诊断失败: %s", exc)
+            await asyncio.sleep(
+                max(300, self.settings.auto_diagnostics_interval_minutes * 60)
+            )
+
     # ------------------------------------------------------------------
     # sampling loop
     # ------------------------------------------------------------------
@@ -286,6 +357,7 @@ class MemoryScopePlugin(Star):
     async def _publish_inventory(self, loaded=False) -> None:
         try:
             await self.observer.publish_inventory(self.context, loaded=loaded)
+            await self.observer.publish_diagnostics(self.collector.diagnostic_snapshot())
         except ValueError as exc:
             logger.debug("MemoryScope 独立后端状态同步失败: %s", exc)
 
@@ -334,6 +406,7 @@ class MemoryScopePlugin(Star):
             yield event.plain_result("依赖审计已在配置中关闭（dep_audit_enabled）。")
             return
         report = await self.collector.audit_now()
+        await self._persist_diagnostics_for_web()
         yield event.plain_result(render_audit(report, top_n=self._top_n(count)))
 
     @filter.permission_type(filter.PermissionType.ADMIN)
@@ -345,6 +418,7 @@ class MemoryScopePlugin(Star):
             "内存紧张的机器还会把换出的页读回内存。请稍候…",
         )
         report = await self.collector.census_now()
+        await self._persist_diagnostics_for_web()
         yield event.plain_result(render_census(report, top_n=self._top_n(count)))
 
     @filter.permission_type(filter.PermissionType.ADMIN)
@@ -356,6 +430,7 @@ class MemoryScopePlugin(Star):
             return
         yield event.plain_result("正在扫描引用图，可能需要几秒…")
         report = await self.collector.build_report(deep=True, record_sample=True)
+        await self._persist_diagnostics_for_web()
         meta = report.get("deep_meta") or {}
         attribution = report.get("attribution") or {}
         text = render_overview(report, top_n=self._top_n(count))
