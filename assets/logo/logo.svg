@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">MemoryScope</title>
+  <desc id="desc">A scope lens framing a memory waveform with live data nodes.</desc>
+  <defs>
+    <linearGradient id="shell" x1="64" y1="42" x2="458" y2="474" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#192f43"/>
+      <stop offset="0.56" stop-color="#122534"/>
+      <stop offset="1" stop-color="#0b1825"/>
+    </linearGradient>
+    <linearGradient id="glass" x1="125" y1="118" x2="385" y2="392" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#24485a" stop-opacity="0.96"/>
+      <stop offset="1" stop-color="#102733" stop-opacity="0.92"/>
+    </linearGradient>
+    <linearGradient id="wave" x1="112" y1="329" x2="407" y2="183" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#67d4ca"/>
+      <stop offset="0.52" stop-color="#92eee0"/>
+      <stop offset="1" stop-color="#f2c276"/>
+    </linearGradient>
+    <radialGradient id="halo" cx="0" cy="0" r="1" gradientTransform="translate(146 112) rotate(45) scale(335)">
+      <stop stop-color="#79ded1" stop-opacity="0.22"/>
+      <stop offset="1" stop-color="#79ded1" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="softGlow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="8" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <rect x="18" y="18" width="476" height="476" rx="122" fill="url(#shell)"/>
+  <rect x="19.5" y="19.5" width="473" height="473" rx="120.5" fill="none" stroke="#b7f4e7" stroke-opacity="0.2" stroke-width="3"/>
+  <circle cx="250" cy="246" r="205" fill="url(#halo)"/>
+
+  <circle cx="256" cy="256" r="161" fill="url(#glass)" stroke="#6bd3ca" stroke-opacity="0.28" stroke-width="3"/>
+  <circle cx="256" cy="256" r="137" fill="none" stroke="#b6f2e7" stroke-opacity="0.14" stroke-width="2" stroke-dasharray="2 15"/>
+  <path d="M256 77v35M256 400v35M77 256h35M400 256h35" stroke="#d5fff4" stroke-opacity="0.7" stroke-width="8" stroke-linecap="round"/>
+
+  <path d="M104 304h42l22-78 35 126 39-91 36 54 40-136 34 125h56" fill="none" stroke="#07131f" stroke-opacity="0.7" stroke-width="24" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M104 304h42l22-78 35 126 39-91 36 54 40-136 34 125h56" fill="none" stroke="url(#wave)" stroke-width="11" stroke-linecap="round" stroke-linejoin="round" filter="url(#softGlow)"/>
+
+  <circle cx="168" cy="226" r="10" fill="#f2c276" stroke="#142b3b" stroke-width="6"/>
+  <circle cx="278" cy="295" r="10" fill="#f2c276" stroke="#142b3b" stroke-width="6"/>
+  <circle cx="318" cy="179" r="10" fill="#f2c276" stroke="#142b3b" stroke-width="6"/>
+
+  <path d="M366 107l17 17M383 107l-17 17" stroke="#f2c276" stroke-width="5" stroke-linecap="round" opacity="0.9"/>
+  <circle cx="383" cy="107" r="4" fill="#fff1c9"/>
+</svg>
