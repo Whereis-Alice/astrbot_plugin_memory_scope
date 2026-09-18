@@ -748,6 +748,10 @@ export const messages = {
     "依赖线索",
     "Dependency findings"
   ],
+  "源码依赖线索": [
+    "源码依赖线索",
+    "Source dependency findings"
+  ],
   "依赖审计只读取源码，可能短时使用 CPU。": [
     "依赖审计只读取源码，可能短时使用 CPU。",
     "The audit reads source files and may briefly use CPU."

@@ -272,6 +272,53 @@ def test_diagnostic_snapshot_can_be_restored_after_collector_reload(tmp_path):
     assert report["diagnostic_snapshot"] == snapshot
 
 
+def test_diagnostic_snapshot_restores_dependency_details_after_collector_reload(tmp_path):
+    imports = "\n".join(f"import heavy_{index}\n" for index in range(25))
+    meta, _module, _star = make_plugin(
+        tmp_path,
+        "plugin_dependencies",
+        source=imports,
+    )
+    first = build_collector(
+        [meta],
+        deep_scan_enabled=False,
+        dep_audit_enabled=False,
+    )
+    for index in range(25):
+        first.ledger.packages[f"heavy_{index}"] = PackageCost(
+            name=f"heavy_{index}",
+            bytes=100 + index,
+            self_bytes=100 + index,
+            wall_ms=1.0,
+            modules=1,
+            imports=1,
+            first_importer="plugin_dependencies",
+        )
+
+    snapshot = run(
+        first.build_report(audit=True, record_sample=False),
+    )["diagnostic_snapshot"]
+    saved = snapshot["plugins"][0]
+    assert saved["audit_measured"] is True
+    assert len(saved["audit_imports"]) == 20
+    assert saved["audit_imports"][0]["module"] == "heavy_24"
+
+    restored = build_collector(
+        [meta],
+        deep_scan_enabled=False,
+        dep_audit_enabled=False,
+    )
+    restored.load_diagnostic_snapshot(snapshot)
+    report = run(restored.build_report(audit=False, record_sample=False))
+    row = report["plugins"][0]
+    assert row["audit_measured"] is True
+    assert row["audit_findings"] == 25
+    assert [item["module"] for item in row["audit_imports"]] == [
+        item["module"] for item in saved["audit_imports"]
+    ]
+    assert row["lazy_savings_bytes"] == saved["audit_known_bytes"]
+
+
 def test_force_gc_returns_rss_measurements():
     collector = build_collector([], deep_scan_enabled=False, dep_audit_enabled=False)
     result = run(collector.force_gc())

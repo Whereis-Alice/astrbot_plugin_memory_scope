@@ -788,11 +788,25 @@ function renderDiagnosticResult() {
     );
     return;
   }
+  const dependencyCell = (plugin) => {
+    const imports = plugin.audit_imports || [];
+    if (!plugin.audit_measured) return "—";
+    if (!imports.length) return "—";
+    const visible = imports.slice(0, 8).map((item) => {
+      const module = typeof item === "string" ? item : item.module;
+      const source = typeof item === "object" && item
+        ? `${item.file || "?"}:${item.lineno || "?"}`
+        : "";
+      return `<span class="tag neutral" title="${esc(source)}">${esc(module)}</span>`;
+    }).join(" ");
+    const rest = Math.max(0, (plugin.audit_findings || imports.length) - imports.length);
+    return visible + (rest ? ` <small>+${rest}</small>` : "");
+  };
   $("diagnostic-results").innerHTML =
     `<div class="scan-result"><p>${t("最近结果")}: ${stamp(data.generated_at, true)} · ${t("具体覆盖范围见原始证据")}</p></div><div class="table-wrap"><table><thead><tr><th>${t("插件")}</th><th>${t("对象普查")}</th><th>${t("引用图估算")}</th><th>${t("依赖线索")}</th></tr></thead><tbody>${measured
       .map(
         (p) =>
-          `<tr><td>${esc(p.display_name || p.name)}</td><td class="mono">${p.census_measured ? size(p.census_bytes) : "—"}</td><td class="mono">${size(p.retained?.total_bytes ?? p.retained_bytes)}</td><td>${p.audit_measured ? esc(p.audit_findings) : "—"}</td></tr>`,
+          `<tr><td>${esc(p.display_name || p.name)}</td><td class="mono">${p.census_measured ? size(p.census_bytes) : "—"}</td><td class="mono">${size(p.retained?.total_bytes ?? p.retained_bytes)}</td><td>${dependencyCell(p)}</td></tr>`,
       )
       .join(
         "",
@@ -975,9 +989,19 @@ function openDetail(id, historical = false) {
     toast(t("这个批次没有该插件的详情"));
     return;
   }
+  const auditImports = row.local?.audit_imports || row.diagnostic?.audit_imports || [];
+  const auditDependencyHtml = auditImports.length
+    ? auditImports.map((item) => {
+        const module = typeof item === "string" ? item : item.module;
+        const source = typeof item === "object" && item
+          ? `${item.file || "?"}:${item.lineno || "?"}`
+          : "";
+        return `<span class="tag neutral" title="${esc(source)}">${esc(module)}</span>`;
+      }).join(" ")
+    : `<p class="muted">${t("未记录")}</p>`;
   drawerFocus = document.activeElement;
   $("detail").innerHTML =
-    `<h1 id="detail-title">${esc(row.label)}</h1><p class="identity mono muted">${esc(row.id)}</p><p>${tag(row.activated === true ? t("已启用") : row.activated === false ? t("已停用") : t("未同步"), "neutral")} ${row.version ? tag(row.version, "neutral") : ""}</p><div class="metrics">${metric(t("启动窗口增量"), row.delta, t("RSS + Swap；非当前独占占用"))}${metric(t("加载耗时"), finite(row.duration) ? Number((row.duration / 1000).toFixed(3)) : null, t("该插件记录到的阶段合计"), "s", "clock")}</div><p class="data-note">${t("窗口增量可能含并发工作。共享依赖首次出现在这里，不代表只被这个插件使用。")}</p><h2>${t("阶段证据")}</h2>${row.phases.length ? `<div class="table-wrap"><table><thead><tr><th>${t("阶段")}</th><th>${t("耗时")}</th><th>RSS + Swap Δ</th></tr></thead><tbody>${row.phases.map((p) => `<tr><td>${phaseName(p.phase)} ${p.failed ? tag(t("失败"), "bad") : ""}</td><td class="mono">${duration(p.duration_ms)}</td><td class="mono num">${signedSize(p.process_rss_swap_delta)}</td></tr>`).join("")}</tbody></table></div>` : empty(t("没有启动阶段证据"), t("插件清单仍可见；需要早期探针才能记录完整导入。"))}<h2>${t("首次出现的依赖")}</h2><div class="package-list">${row.packages.map((p) => `<span>${esc(p.name)}</span>`).join("") || `<p class="muted">${t("未记录")}</p>`}</div><h2>${t("关联子进程")}</h2>${row.processes.length ? processTable(row.processes) : `<p class="muted">${t("未发现插件启动关联")}</p>`}${row.local ? `<h2>${t("本地诊断证据")}</h2>${rawDetails(row.local)}` : ""}${rawDetails({ phases: row.phases, packages: row.packages })}`;
+    `<h1 id="detail-title">${esc(row.label)}</h1><p class="identity mono muted">${esc(row.id)}</p><p>${tag(row.activated === true ? t("已启用") : row.activated === false ? t("已停用") : t("未同步"), "neutral")} ${row.version ? tag(row.version, "neutral") : ""}</p><div class="metrics">${metric(t("启动窗口增量"), row.delta, t("RSS + Swap；非当前独占占用"))}${metric(t("加载耗时"), finite(row.duration) ? Number((row.duration / 1000).toFixed(3)) : null, t("该插件记录到的阶段合计"), "s", "clock")}</div><p class="data-note">${t("窗口增量可能含并发工作。共享依赖首次出现在这里，不代表只被这个插件使用。")}</p><h2>${t("阶段证据")}</h2>${row.phases.length ? `<div class="table-wrap"><table><thead><tr><th>${t("阶段")}</th><th>${t("耗时")}</th><th>RSS + Swap Δ</th></tr></thead><tbody>${row.phases.map((p) => `<tr><td>${phaseName(p.phase)} ${p.failed ? tag(t("失败"), "bad") : ""}</td><td class="mono">${duration(p.duration_ms)}</td><td class="mono num">${signedSize(p.process_rss_swap_delta)}</td></tr>`).join("")}</tbody></table></div>` : empty(t("没有启动阶段证据"), t("插件清单仍可见；需要早期探针才能记录完整导入。"))}<h2>${t("首次出现的依赖")}</h2><div class="package-list">${row.packages.map((p) => `<span>${esc(p.name)}</span>`).join("") || `<p class="muted">${t("未记录")}</p>`}</div><h2>${t("源码依赖线索")}</h2><div class="package-list">${auditDependencyHtml}</div><h2>${t("关联子进程")}</h2>${row.processes.length ? processTable(row.processes) : `<p class="muted">${t("未发现插件启动关联")}</p>`}${row.local ? `<h2>${t("本地诊断证据")}</h2>${rawDetails(row.local)}` : ""}${rawDetails({ phases: row.phases, packages: row.packages, audit_imports: auditImports })}`;
   $("drawer").hidden = false;
   $("workspace").inert = true;
   document.querySelector(".topbar").inert = true;

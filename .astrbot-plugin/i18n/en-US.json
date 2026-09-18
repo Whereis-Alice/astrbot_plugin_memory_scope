@@ -192,6 +192,7 @@
       "具体覆盖范围见原始证据": "See raw evidence for coverage",
       "引用图估算": "Reference estimate",
       "依赖线索": "Dependency findings",
+      "源码依赖线索": "Source dependency findings",
       "依赖审计只读取源码，可能短时使用 CPU。": "The audit reads source files and may briefly use CPU.",
       "对象普查可能暂停消息处理并引起内存换入。它不会得到精确的逐插件 RSS。": "A census may pause message processing and swap pages in. It cannot produce exact per-plugin RSS.",
       "引用图扫描会分片处理对象，但仍会消耗 CPU 并触碰内存。建议在空闲时执行。": "The reference scan runs in slices but still uses CPU and touches memory. Run when idle.",

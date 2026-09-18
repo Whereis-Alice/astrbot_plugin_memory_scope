@@ -841,6 +841,19 @@ class MemoryCollector:
             retained = deep_results.get(entry.name) or (
                 saved.get("retained") if saved else None
             )
+            audit_imports = (
+                [item.to_dict() for item in audit.imports]
+                if audit is not None
+                else list((saved or {}).get("audit_imports") or [])
+            )
+            audit_measured = audit is not None or bool(
+                (saved or {}).get("audit_measured")
+            )
+            audit_findings = (
+                len(audit.imports)
+                if audit is not None
+                else int((saved or {}).get("audit_findings") or len(audit_imports))
+            )
             retained_bytes = int((retained or {}).get("total_bytes") or 0)
             row: dict[str, Any] = {
                 **entry.to_dict(),
@@ -860,10 +873,29 @@ class MemoryCollector:
                 "census_objects": seen.objects if seen is not None else 0,
                 "census_measured": census is not None,
                 "census_types": seen.top_types(6) if seen is not None else [],
-                "lazy_savings_bytes": audit.known_bytes if audit is not None else 0,
-                "audit_findings": len(audit.imports) if audit is not None else 0,
-                "audit_measured": audit is not None,
-                "audit_error": audit.error if audit is not None else None,
+                "lazy_savings_bytes": (
+                    audit.known_bytes
+                    if audit is not None
+                    else int((saved or {}).get("audit_known_bytes") or 0)
+                ),
+                "audit_findings": audit_findings,
+                "audit_imports": audit_imports,
+                "audit_known_bytes": (
+                    audit.known_bytes
+                    if audit is not None
+                    else int((saved or {}).get("audit_known_bytes") or 0)
+                ),
+                "audit_unknown_modules": (
+                    list(audit.unknown_modules)
+                    if audit is not None
+                    else list((saved or {}).get("audit_unknown_modules") or [])
+                ),
+                "audit_measured": audit_measured,
+                "audit_error": (
+                    audit.error
+                    if audit is not None
+                    else (saved or {}).get("audit_error")
+                ),
                 "delta_bytes": (
                     self.history.delta(entry.name, census_bytes)
                     if census is not None
@@ -918,6 +950,11 @@ class MemoryCollector:
                     "retained": row.get("retained"),
                     "retained_bytes": row.get("retained_bytes"),
                     "audit_findings": row.get("audit_findings", 0),
+                    "audit_imports": list(row.get("audit_imports") or [])[:20],
+                    "audit_known_bytes": row.get("audit_known_bytes", 0),
+                    "audit_unknown_modules": list(
+                        row.get("audit_unknown_modules") or []
+                    )[:20],
                     "audit_measured": bool(row.get("audit_measured")),
                     "audit_error": row.get("audit_error"),
                 }

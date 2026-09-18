@@ -100,6 +100,43 @@ def preview(tmp_path):
         run["id"],
         {"ts": now - 168, "seq": 3, "kind": "probe_finished", "overhead_ms": 2},
     )
+    observer.store.save_diagnostic(
+        run["id"],
+        {
+            "generated_at": now - 30,
+            "source": "automatic",
+            "plugins": [
+                {
+                    "name": "example",
+                    "display_name": "示例图片插件",
+                    "root_dir_name": "astrbot_plugin_example",
+                    "audit_findings": 1,
+                    "audit_imports": [
+                        {
+                            "module": "numpy",
+                            "file": "main.py",
+                            "lineno": 2,
+                            "guarded": False,
+                            "cost_bytes": 123456,
+                        }
+                    ],
+                    "audit_known_bytes": 123456,
+                    "audit_unknown_modules": [],
+                    "audit_measured": True,
+                    "audit_error": None,
+                }
+            ],
+            "census_meta": None,
+            "audit_meta": {
+                "generated_at": now - 30,
+                "finding_count": 1,
+                "plugin_count": 1,
+                "audited": 1,
+                "unknown_modules": [],
+            },
+            "deep_meta": {"generated_at": None, "rounds": 0},
+        },
+    )
     server = make_server(observer)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -144,6 +181,8 @@ def test_report_navigation_and_mobile_layout(preview, width, height):
         page.get_by_role("button", name="示例图片插件", exact=True).click()
         assert page.locator("#drawer").is_visible()
         assert "9.54 MiB" in page.locator("#detail").inner_text()
+        assert "源码依赖线索" in page.locator("#detail").inner_text()
+        assert "numpy" in page.locator("#detail").inner_text()
         page.keyboard.press("Escape")
         assert page.locator("#drawer").is_hidden()
         assert not page.locator("#workspace").evaluate("el=>el.inert")
@@ -162,8 +201,9 @@ def test_report_navigation_and_mobile_layout(preview, width, height):
         )
         snapshot(page, f"startup-{width}")
         page.locator('[data-go="diagnostics"]').click()
-        page.get_by_role("heading", name="尚未运行诊断").wait_for()
+        page.get_by_role("heading", name="诊断结果").wait_for()
         assert page.get_by_role("button", name="运行一次").first.is_disabled()
+        assert page.locator("#diagnostic-results").get_by_text("numpy", exact=True).is_visible()
         snapshot(page, f"diagnostics-{width}")
         page.locator('[data-go="experiments"]').click()
         assert page.get_by_role("button", name="创建实验", exact=True).is_disabled()
