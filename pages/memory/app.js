@@ -206,6 +206,7 @@ async function api(endpoint, params = {}, method = "GET", local = false) {
         : await bridge.apiPost((local ? "" : "observer_") + endpoint, params);
   } else {
     const target = endpoint === "start" ? "experiments" : endpoint;
+    const timeoutMs = method === "POST" && endpoint === "audit" ? 120000 : 12000;
     const res = await fetch(
       "./api/" +
         target +
@@ -217,7 +218,7 @@ async function api(endpoint, params = {}, method = "GET", local = false) {
           "Content-Type": "application/json",
         },
         body: method === "GET" ? undefined : JSON.stringify(params),
-        signal: AbortSignal.timeout(12000),
+        signal: AbortSignal.timeout(timeoutMs),
       },
     );
     const body = await res.json();
@@ -791,6 +792,7 @@ function renderDiagnosticResult() {
   const dependencyCell = (plugin) => {
     const imports = plugin.audit_imports || [];
     if (!plugin.audit_measured) return "—";
+    if (plugin.audit_error === "time_budget") return tag(t("待扫描"), "neutral");
     if (!imports.length) return "—";
     const visible = imports.slice(0, 8).map((item) => {
       const module = typeof item === "string" ? item : item.module;
@@ -829,7 +831,7 @@ async function confirmAction(title, message) {
 async function scan(name) {
   if (S.scanBusy || !embedded) return;
   const descriptions = {
-    audit: "依赖审计只读取源码，可能短时使用 CPU。",
+    audit: "依赖审计会完整读取插件源码；插件很多时可能需要几十秒，但不会扫描对象堆。",
     census:
       "对象普查可能暂停消息处理并引起内存换入。它不会得到精确的逐插件 RSS。",
     deep: "引用图扫描会分片处理对象，但仍会消耗 CPU 并触碰内存。建议在空闲时执行。",

@@ -748,13 +748,17 @@ export const messages = {
     "依赖线索",
     "Dependency findings"
   ],
+  "待扫描": [
+    "待扫描",
+    "Pending scan"
+  ],
   "源码依赖线索": [
     "源码依赖线索",
     "Source dependency findings"
   ],
-  "依赖审计只读取源码，可能短时使用 CPU。": [
-    "依赖审计只读取源码，可能短时使用 CPU。",
-    "The audit reads source files and may briefly use CPU."
+  "依赖审计会完整读取插件源码；插件很多时可能需要几十秒，但不会扫描对象堆。": [
+    "依赖审计会完整读取插件源码；插件很多时可能需要几十秒，但不会扫描对象堆。",
+    "The audit reads all plugin source files; with many plugins it may take tens of seconds, but it does not scan the heap."
   ],
   "对象普查可能暂停消息处理并引起内存换入。它不会得到精确的逐插件 RSS。": [
     "对象普查可能暂停消息处理并引起内存换入。它不会得到精确的逐插件 RSS。",

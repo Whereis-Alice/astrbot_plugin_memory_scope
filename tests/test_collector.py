@@ -319,6 +319,21 @@ def test_diagnostic_snapshot_restores_dependency_details_after_collector_reload(
     assert row["lazy_savings_bytes"] == saved["audit_known_bytes"]
 
 
+def test_manual_audit_completes_plugins_beyond_automatic_budget(tmp_path):
+    metas = [
+        make_plugin(tmp_path, f"plugin_manual_{index}", source="import heavy\n")[0]
+        for index in range(3)
+    ]
+    collector = build_collector(metas, deep_scan_enabled=False, dep_audit_enabled=True)
+    collector.auditor.time_budget_ms = -1
+
+    report = run(collector.audit_now())
+
+    assert report["audit_meta"]["time_budget_hit"] is False
+    assert report["audit_meta"]["pending"] == 0
+    assert all(row["audit_measured"] for row in report["plugins"])
+
+
 def test_force_gc_returns_rss_measurements():
     collector = build_collector([], deep_scan_enabled=False, dep_audit_enabled=False)
     result = run(collector.force_gc())

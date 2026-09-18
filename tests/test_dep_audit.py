@@ -205,6 +205,21 @@ def test_audit_reports_how_many_plugins_the_time_budget_left_unscanned(tmp_path)
     assert starved["pending"] == 3
     assert all(item.error == "time_budget" for item in starved["audits"].values())
 
+
+def test_complete_audit_ignores_automatic_time_budget(tmp_path):
+    plugins = [
+        make_plugin(tmp_path, f"plugin_{index}", "import heavy\n")
+        for index in range(3)
+    ]
+    auditor = DependencyAuditor(time_budget_ms=50)
+    auditor.time_budget_ms = -1  # the ordinary pass would stop immediately
+
+    result = auditor.run(plugins, {"heavy": 10}, complete=True)
+
+    assert result["time_budget_hit"] is False
+    assert result["pending"] == 0
+    assert all(item.imports for item in result["audits"].values())
+
 def test_raw_import_dataclass_is_small_and_serializable():
     item = RawImport("numpy", "sub/main.py", 7, False)
     assert item.top == "numpy"

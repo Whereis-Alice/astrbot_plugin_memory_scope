@@ -259,12 +259,20 @@ class DependencyAuditor:
         self,
         entries: Iterable[Any],
         cost_table: dict[str, int] | None = None,
+        *,
+        complete: bool = False,
     ) -> dict[str, Any]:
-        """Audit every entry with a source directory and aggregate the result."""
+        """Audit every entry with a source directory and aggregate the result.
+
+        Automatic diagnostics use the normal small time budget so they cannot
+        compete with message handling indefinitely.  An explicit manual audit
+        may set ``complete`` to finish the bounded per-plugin scans instead of
+        returning a partial list just because the automatic budget was reached.
+        """
 
         costs = cost_table or {}
         started = time.perf_counter()
-        deadline = started + self.time_budget_ms / 1000.0
+        deadline = None if complete else started + self.time_budget_ms / 1000.0
         audits: dict[str, PluginAudit] = {}
         usage: dict[str, dict[str, Any]] = {}
         budget_hit = False
@@ -278,7 +286,7 @@ class DependencyAuditor:
             if not root or not os.path.isdir(root):
                 audit.error = "no_source_dir"
                 continue
-            if time.perf_counter() > deadline:
+            if deadline is not None and time.perf_counter() > deadline:
                 audit.error = "time_budget"
                 budget_hit = True
                 continue

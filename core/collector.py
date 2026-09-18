@@ -529,8 +529,12 @@ class MemoryCollector:
         self._census = result
         return result
 
-    def _audit_blocking(self) -> dict[str, Any]:
-        result = self.auditor.run(self.registry.entries, self.ledger.cost_table())
+    def _audit_blocking(self, complete: bool = False) -> dict[str, Any]:
+        result = self.auditor.run(
+            self.registry.entries,
+            self.ledger.cost_table(),
+            complete=complete,
+        )
         self._audit = result
         return result
 
@@ -540,6 +544,7 @@ class MemoryCollector:
         census: bool,
         audit: bool,
         deep_limits: ScanLimits | None = None,
+        audit_complete: bool = False,
     ) -> dict[str, Any]:
         # Refresh the 5 ms procfs read here, in the worker thread, so that
         # process_stats() only ever touches a warm cache on the event loop.
@@ -548,7 +553,7 @@ class MemoryCollector:
         if census:
             self._census_blocking()
         if audit:
-            self._audit_blocking()
+            self._audit_blocking(complete=audit_complete)
         deep_results = (
             self._deep_scan(deep_limits) if deep_limits is not None else self._deep_scan()
         ) if deep else dict(self._last_deep)
@@ -579,6 +584,7 @@ class MemoryCollector:
         diagnostic_source: str = "manual",
         deep_limits: ScanLimits | None = None,
         record_sample: bool = True,
+        audit_complete: bool = False,
     ) -> dict[str, Any]:
         """Build the payload.
 
@@ -605,6 +611,7 @@ class MemoryCollector:
                 run_census_now,
                 run_audit_now,
                 deep_limits,
+                audit_complete=audit_complete,
             )
             process = self.process_stats(
                 include_object_count=deep and self.settings.include_object_count,
@@ -1130,7 +1137,11 @@ class MemoryCollector:
         # An AST scan does not observe a new memory sample.  Keeping it out of
         # the history prevents clicking the audit button from looking like an
         # extra RSS tick in the trend chart.
-        return await self.build_report(audit=True, record_sample=False)
+        return await self.build_report(
+            audit=True,
+            audit_complete=True,
+            record_sample=False,
+        )
 
     async def automatic_diagnostics(self) -> dict[str, Any]:
         """Run a conservative background diagnostic pass.
