@@ -100,6 +100,7 @@ def cgroup_memory(group: Path) -> dict:
         "current": integer(group / "memory.current"),
         "anon": anon,
         "file": stat.get("file"),
+        "kernel": stat.get("kernel"),
         "swap": swap,
         "anon_swap": anon + swap if anon is not None and swap is not None else None,
         "limit": integer(group / "memory.max"),

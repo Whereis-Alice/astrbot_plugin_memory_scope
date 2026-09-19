@@ -5,10 +5,11 @@ let chartSequence = 0;
 
 // SVG uses actual pixel dimensions, so text never shrinks with the desktop viewBox.
 export class TrendChart {
-  constructor(root, onSummary) {
+  constructor(root, onSummary, onInspect = null) {
     this.root = root;
     this.fillId = `scope-trend-fill-${++chartSequence}`;
     this.onSummary = onSummary;
+    this.onInspect = onInspect;
     this.points = [];
     this.key = "current";
     this.zoom = null;
@@ -151,7 +152,7 @@ export class TrendChart {
       }
       return lo > 0 && ts - valid[lo - 1].ts < valid[lo].ts - ts ? lo - 1 : lo;
     };
-    let down = null;
+    let down = null, touchDown = null;
     svg.onpointermove = (e) => {
       const px = coordinate(e);
       show(nearest(px));
@@ -161,6 +162,7 @@ export class TrendChart {
       }
     };
     svg.onpointerdown = (e) => {
+      if (e.pointerType === "touch") touchDown = { x: e.clientX, y: e.clientY };
       if (e.pointerType !== "touch" && e.button === 0) {
         down = coordinate(e);
         svg.setPointerCapture(e.pointerId);
@@ -168,18 +170,29 @@ export class TrendChart {
       show(nearest(coordinate(e)));
     };
     svg.onpointerup = (e) => {
+      if (e.pointerType === "touch" && touchDown) {
+        if (Math.hypot(e.clientX - touchDown.x, e.clientY - touchDown.y) < 12)
+          this.onInspect?.(valid[nearest(coordinate(e))].ts);
+        touchDown = null;
+      }
       if (down !== null) {
         const px = coordinate(e);
         if (Math.abs(px - down) > 18) {
           const a = valid[nearest(Math.min(px, down))].ts,
             b = valid[nearest(Math.max(px, down))].ts;
           if (a < b) this.zoom = [a, b];
+          down = null;
+          this.render();
+          this.root.querySelector("svg")?.focus();
+        } else {
+          down = null;
+          selection.setAttribute("width", 0);
+          this.onInspect?.(valid[nearest(px)].ts);
         }
-        down = null;
-        this.render();
       }
     };
     svg.onpointercancel = () => {
+      touchDown = null;
       down = null;
       selection.setAttribute("width", 0);
     };
@@ -193,6 +206,9 @@ export class TrendChart {
       if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
         e.preventDefault();
         show(this.index + (e.key === "ArrowRight" ? 1 : -1));
+      } else if (e.key === "Enter") {
+        e.preventDefault();
+        this.onInspect?.(valid[Math.min(this.index, valid.length - 1)].ts);
       } else if (e.key === "Escape") {
         this.reset();
         this.root.querySelector("svg")?.focus();

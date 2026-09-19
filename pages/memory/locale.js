@@ -514,7 +514,7 @@ export const messages = {
   ],
   "上一页": [
     "上一页",
-    "Previous"
+    "Previous page"
   ],
   "下一页": [
     "下一页",
@@ -1115,6 +1115,282 @@ export const messages = {
   "theme.hint": [
     "选择即应用，自动记住你的偏好。",
     "Applies instantly. Your choice is saved."
+  ],
+  "最近活动": [
+    "最近活动",
+    "Recent activity"
+  ],
+  "把内存波动与当时的插件、模型和工具活动放在一起。": [
+    "把内存波动与当时的插件、模型和工具活动放在一起。",
+    "Correlate memory changes with plugin, model and tool activity."
+  ],
+  "分析当前区间": [
+    "分析当前区间",
+    "Analyze visible interval"
+  ],
+  "点击曲线或按 Enter 查看附近活动；拖动仍为放大。": [
+    "点击曲线或按 Enter 查看附近活动；拖动仍为放大。",
+    "Click the curve or press Enter for nearby activity; drag to zoom."
+  ],
+  "活动记录与增长分析由独立后端保存，请先配置连接。": [
+    "活动记录与增长分析由独立后端保存，请先配置连接。",
+    "Connect the observer to store runtime activity and analyze growth."
+  ],
+  "仅记录功能元数据 · 自动保存 · 与趋势时间对齐": [
+    "仅记录功能元数据 · 自动保存 · 与趋势时间对齐",
+    "Metadata only · Persisted automatically · Aligned with the trend"
+  ],
+  "活动类型": [
+    "活动类型",
+    "Activity type"
+  ],
+  "全部类型": [
+    "全部类型",
+    "All types"
+  ],
+  "活动记录读取失败": [
+    "活动记录读取失败",
+    "Activity records unavailable"
+  ],
+  "请确认插件与独立后端都已更新。": [
+    "请确认插件与独立后端都已更新。",
+    "Update both the plugin and the independent observer."
+  ],
+  "正在读取记录": [
+    "正在读取记录",
+    "Loading records"
+  ],
+  "最新记录自动刷新": [
+    "最新记录自动刷新",
+    "Latest records refresh automatically"
+  ],
+  "浏览历史时暂停翻页刷新": [
+    "浏览历史时暂停翻页刷新",
+    "History page stays fixed while browsing"
+  ],
+  "更早记录": [
+    "更早记录",
+    "Older records"
+  ],
+  "限时分配追踪": [
+    "限时分配追踪",
+    "Timed allocation trace"
+  ],
+  "默认关闭 · 手动开启 · 到时退出": [
+    "默认关闭 · 手动开启 · 到时退出",
+    "Off by default · Start manually · Stops automatically"
+  ],
+  "仅追踪开启后的 Python 分配位置，不是插件独占内存，也不覆盖所有原生库。会增加 CPU 和内存开销；限时 30 秒，追踪器记账超过 16 MiB 时提前退出。内存检查不是硬性进程内存上限。": [
+    "仅追踪开启后的 Python 分配位置，不是插件独占内存，也不覆盖所有原生库。会增加 CPU 和内存开销；限时 30 秒，追踪器记账超过 16 MiB 时提前退出。内存检查不是硬性进程内存上限。",
+    "Tracks new Python allocations, not exclusive plugin memory or all native allocations. Adds CPU and memory overhead. Stops after 30 seconds, or early when tracer bookkeeping exceeds 16 MiB. This check is not a hard process-memory limit."
+  ],
+  "追踪状态": [
+    "追踪状态",
+    "Trace status"
+  ],
+  "未开启": [
+    "未开启",
+    "Off"
+  ],
+  "进行中": [
+    "进行中",
+    "In progress"
+  ],
+  "已结束": [
+    "已结束",
+    "Finished"
+  ],
+  "达到保护限制": [
+    "达到保护限制",
+    "Protection limit reached"
+  ],
+  "追踪不可用": [
+    "追踪不可用",
+    "Trace unavailable"
+  ],
+  "追踪接下来 30 秒": [
+    "追踪接下来 30 秒",
+    "Trace the next 30 seconds"
+  ],
+  "停止追踪": [
+    "停止追踪",
+    "Stop tracing"
+  ],
+  "请在 AstrBot 插件页手动开启；这里可以查看保存的追踪记录。": [
+    "请在 AstrBot 插件页手动开启；这里可以查看保存的追踪记录。",
+    "Start tracing manually from the AstrBot plugin page. Saved trace records are available here."
+  ],
+  "追踪会增加 CPU 和内存开销，可能影响回复速度。只追踪接下来的 30 秒，不重启机器人。确定继续？": [
+    "追踪会增加 CPU 和内存开销，可能影响回复速度。只追踪接下来的 30 秒，不重启机器人。确定继续？",
+    "Tracing adds CPU and memory overhead and may slow replies. It runs for the next 30 seconds without restarting the bot. Continue?"
+  ],
+  "增长分析": [
+    "增长分析",
+    "Growth analysis"
+  ],
+  "区间采样不足": [
+    "区间采样不足",
+    "Not enough interval samples"
+  ],
+  "插件处理": [
+    "插件处理",
+    "Plugin handler"
+  ],
+  "模型请求": [
+    "模型请求",
+    "Model request"
+  ],
+  "工具调用": [
+    "工具调用",
+    "Tool call"
+  ],
+  "生命周期": [
+    "生命周期",
+    "Lifecycle"
+  ],
+  "内存诊断": [
+    "内存诊断",
+    "Memory diagnostics"
+  ],
+  "分配追踪": [
+    "分配追踪",
+    "Allocation trace"
+  ],
+  "进程变化": [
+    "进程变化",
+    "Process changes"
+  ],
+  "未收到结束": [
+    "未收到结束",
+    "End not observed"
+  ],
+  "同期活动只是排查线索，不等于造成了这些内存增长；并发任务、原生库和未接入的后台任务仍可能是原因。": [
+    "同期活动只是排查线索，不等于造成了这些内存增长；并发任务、原生库和未接入的后台任务仍可能是原因。",
+    "Concurrent activity is evidence to investigate, not proof of causation. Other tasks, native libraries and uninstrumented background work may cause the growth."
+  ],
+  "该批次没有运行活动记录。旧数据不能还原当时的插件操作；请更新插件和独立后端。": [
+    "该批次没有运行活动记录。旧数据不能还原当时的插件操作；请更新插件和独立后端。",
+    "No runtime recorder for this run. Older samples cannot reconstruct plugin actions. Update the plugin and observer."
+  ],
+  "活动记录已关闭": [
+    "活动记录已关闭",
+    "Activity recorder disabled"
+  ],
+  "活动记录连接过期": [
+    "活动记录连接过期",
+    "Activity recorder connection stale"
+  ],
+  "活动记录已连接": [
+    "活动记录已连接",
+    "Activity recorder connected"
+  ],
+  "已接入处理函数": [
+    "已接入处理函数",
+    "Instrumented handlers"
+  ],
+  "限流或队列丢弃": [
+    "限流或队列丢弃",
+    "Rate or queue drops"
+  ],
+  "只记录功能名称与时间，不保存聊天内容、提示词、工具参数。未接入的后台任务不会自动出现。": [
+    "只记录功能名称与时间，不保存聊天内容、提示词、工具参数。未接入的后台任务不会自动出现。",
+    "Only names and timestamps are recorded, never messages, prompts or tool arguments. Uninstrumented background tasks will not appear automatically."
+  ],
+  "分配位置": [
+    "分配位置",
+    "Allocation location"
+  ],
+  "Python 净增长": [
+    "Python 净增长",
+    "Net Python growth"
+  ],
+  "这个范围没有活动记录": [
+    "这个范围没有活动记录",
+    "No activity records in this range"
+  ],
+  "没有记录不等于没有活动；可能尚未接入、被限流，或记录已过保留期限。": [
+    "没有记录不等于没有活动；可能尚未接入、被限流，或记录已过保留期限。",
+    "No records does not mean no activity. Instrumentation may be missing, rate-limited, or past retention."
+  ],
+  "查看同期内存": [
+    "查看同期内存",
+    "Inspect interval memory"
+  ],
+  "使用区间内真实采样点，不补零、不跨启动批次。": [
+    "使用区间内真实采样点，不补零、不跨启动批次。",
+    "Uses actual samples within the interval. No zero filling or cross-run comparisons."
+  ],
+  "区间峰值": [
+    "区间峰值",
+    "Interval peak"
+  ],
+  "最大采样间隔": [
+    "最大采样间隔",
+    "Largest sampling gap"
+  ],
+  "增长构成": [
+    "增长构成",
+    "Growth breakdown"
+  ],
+  "指标": [
+    "指标",
+    "Metric"
+  ],
+  "开始": [
+    "开始",
+    "Start"
+  ],
+  "结束": [
+    "结束",
+    "End"
+  ],
+  "变化": [
+    "变化",
+    "Change"
+  ],
+  "内核内存": [
+    "内核内存",
+    "Kernel memory"
+  ],
+  "服务总量已经包含子进程和文件缓存；RSS 与这些分类不是可相加的独立账单。文件缓存也不是插件独占内存。": [
+    "服务总量已经包含子进程和文件缓存；RSS 与这些分类不是可相加的独立账单。文件缓存也不是插件独占内存。",
+    "Service accounting includes children and file cache. RSS and these categories are overlapping, not additive. File cache is not exclusive plugin memory."
+  ],
+  "进程": [
+    "进程",
+    "Process"
+  ],
+  "主进程": [
+    "主进程",
+    "Main process"
+  ],
+  "区间两端存在": [
+    "区间两端存在",
+    "Present at both endpoints"
+  ],
+  "区间末端新增": [
+    "区间末端新增",
+    "Appeared by interval end"
+  ],
+  "区间末端消失": [
+    "区间末端消失",
+    "Disappeared by interval end"
+  ],
+  "进程按 PID 和启动标识匹配；新增或退出的进程不拿缺失值当零。采样之间的短命进程可能遗漏。": [
+    "进程按 PID 和启动标识匹配；新增或退出的进程不拿缺失值当零。采样之间的短命进程可能遗漏。",
+    "Processes are matched by PID and start identity. Missing endpoints are not zero. Short-lived processes between samples may be missed."
+  ],
+  "至少需要两个真实采样点。请选择更大的区间，或等待下一次采样。": [
+    "至少需要两个真实采样点。请选择更大的区间，或等待下一次采样。",
+    "At least two actual samples are needed. Choose a larger interval or wait for another sample."
+  ],
+  "同期活动": [
+    "同期活动",
+    "Overlapping activity"
+  ],
+  "活动较多，仅显示最近 200 条；可到最近活动页缩小范围筛选。": [
+    "活动较多，仅显示最近 200 条；可到最近活动页缩小范围筛选。",
+    "Only the latest 200 overlapping records are shown. Narrow the range on the activity page for more detail."
   ]
 };
 let locale = "zh-CN";

@@ -34,6 +34,8 @@ class ObserverApi:
             "compare",
             "experiments",
             "diagnostics",
+            "activities",
+            "growth",
         ):
 
             def make_handler(endpoint):
@@ -43,7 +45,20 @@ class ObserverApi:
                         allowed = {
                             k: v
                             for k, v in query.items()
-                            if k in {"id", "A", "B", "seconds", "samples"}
+                            if k
+                            in {
+                                "id",
+                                "A",
+                                "B",
+                                "seconds",
+                                "samples",
+                                "since",
+                                "until",
+                                "before",
+                                "plugin",
+                                "category",
+                                "limit",
+                            }
                         }
                         return ok(await self.client.get(endpoint, allowed))
                     except ValueError as exc:

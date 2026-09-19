@@ -61,3 +61,9 @@ python -m ruff check observer core/observer_api.py core/observer_client.py tests
 浏览器测试需要 Playwright Chromium：`python -m playwright install chromium`。设置 `MEMORYSCOPE_QA_DIR` 可保存桌面和手机截图。
 
 `pages/memory/index.html` 与 `observer.html` 共用 `app.js`、`model.js`、`chart.js`、`locale.js` 和 `style.css`。内嵌页通过 AstrBot SDK 转发接口，独立页访问后端 HTTP API。不使用远程字体、CDN 或图表依赖。
+
+## 运行活动与增长分析
+
+连接独立后端后，`activity_recording_enabled` 默认开启，自动记录功能名称与起止时间。`activity_max_per_minute` 默认 300，繁忙时超过部分跳过，不拖住机器人。记录不会保存聊天正文、提示词或工具参数。
+
+「最近活动」可筛选及翻看历史启动批次；总览趋势可点击或拖动后分析区间。详情与性能边界见[增长与活动说明](activity.md)。限时分配追踪与活动记录是两回事，追踪始终需要手动确认。

@@ -44,6 +44,12 @@ class Store:
             CREATE TABLE IF NOT EXISTS jobs(id TEXT PRIMARY KEY, ts REAL, payload BLOB);
             CREATE TABLE IF NOT EXISTS diagnostics(run TEXT PRIMARY KEY, ts REAL, payload BLOB);
             CREATE INDEX IF NOT EXISTS diagnostic_ts ON diagnostics(ts);
+            CREATE TABLE IF NOT EXISTS activities(
+                seq INTEGER PRIMARY KEY AUTOINCREMENT, run TEXT NOT NULL,
+                uid TEXT NOT NULL, start REAL NOT NULL, end REAL,
+                category TEXT NOT NULL, plugin TEXT NOT NULL, payload BLOB NOT NULL,
+                UNIQUE(run,uid));
+            CREATE INDEX IF NOT EXISTS activity_run ON activities(run,start);
         """)
         self.db.commit()
         self.dropped = 0
@@ -120,6 +126,91 @@ class Store:
         result.reverse()
         return result
 
+    def save_activities(self, run_id: str, records: list[dict]) -> None:
+        """Separate quota: frequent runtime events never evict startup evidence."""
+        with self.lock, self.db:
+            if self.path.stat().st_size > self.max_bytes:
+                self.dropped += len(records)
+                return
+            for item in records:
+                self.db.execute(
+                    "INSERT INTO activities(run,uid,start,end,category,plugin,payload) VALUES (?,?,?,?,?,?,?) "
+                    "ON CONFLICT(run,uid) DO UPDATE SET end=excluded.end,payload=excluded.payload "
+                    "WHERE activities.end IS NULL",
+                    (
+                        run_id,
+                        item["id"],
+                        item["start"],
+                        item.get("end"),
+                        item["category"],
+                        item["plugin"],
+                        pack(item),
+                    ),
+                )
+            if records:
+                self.db.execute(
+                    "DELETE FROM activities WHERE seq < (SELECT seq FROM activities ORDER BY seq DESC LIMIT 1 OFFSET 19999)"
+                )
+
+    def growth_samples(self, run_id: str, since: float, until: float):
+        """Stream history; retain only endpoints, not thousands of process trees."""
+        from .activity import number
+
+        first = last = None
+        peak, gap, count = None, 0, 0
+        with self.lock:
+            cursor = self.db.execute(
+                "SELECT payload FROM samples WHERE run=? AND ts>=? AND ts<=? ORDER BY ts,id",
+                (run_id, since, until),
+            )
+            for row in cursor:
+                sample = unpack(row[0])
+                value = number(sample.get("memory", {}).get("current"))
+                if value is not None:
+                    peak = value if peak is None else max(peak, value)
+                if last is not None:
+                    gap = max(gap, sample["ts"] - last["ts"])
+                if first is None:
+                    first = sample
+                last = sample
+                count += 1
+        endpoints = [] if first is None else [first] if count == 1 else [first, last]
+        return endpoints, {"peak": peak, "max_gap_seconds": gap, "sample_count": count}
+
+    def activities(
+        self,
+        run_id: str,
+        *,
+        since=0,
+        until=None,
+        before=None,
+        plugin="",
+        category="",
+        limit=50,
+    ) -> dict:
+        where, params = ["run=?", "COALESCE(end,start+1800)>=?"], [run_id, since]
+        if until is not None:
+            where.append("start<=?")
+            params.append(until)
+        if before is not None:
+            where.append("seq<?")
+            params.append(before)
+        for field, value in (("plugin", plugin), ("category", category)):
+            if value:
+                where.append(f"{field}=?")
+                params.append(value)
+        limit = max(1, min(int(limit), 200))
+        with self.lock:
+            rows = self.db.execute(
+                f"SELECT seq,payload FROM activities WHERE {' AND '.join(where)} ORDER BY seq DESC LIMIT ?",
+                [*params, limit + 1],
+            ).fetchall()
+        items = [dict(unpack(row[1]), seq=row[0]) for row in rows[:limit]]
+        return {
+            "items": items,
+            "next_cursor": items[-1]["seq"] if len(rows) > limit else None,
+        }
+
     def save_job(self, job: dict) -> None:
         with self.lock, self.db:
             self.db.execute(
@@ -134,7 +225,9 @@ class Store:
             ).fetchall()
         return [unpack(row[0]) for row in rows]
 
-    def save_diagnostic(self, run_id: str, snapshot: dict, ts: float | None = None) -> None:
+    def save_diagnostic(
+        self, run_id: str, snapshot: dict, ts: float | None = None
+    ) -> None:
         with self.lock, self.db:
             self.db.execute(
                 "INSERT OR REPLACE INTO diagnostics VALUES (?,?,?)",
@@ -177,6 +270,7 @@ class Store:
                     )
                 self.db.execute("DELETE FROM runs WHERE ts<?", (cutoff,))
                 self.db.execute("DELETE FROM diagnostics WHERE ts<?", (cutoff,))
+                self.db.execute("DELETE FROM activities WHERE start<?", (cutoff,))
                 self.db.execute(
                     "DELETE FROM jobs WHERE id IN (SELECT id FROM jobs ORDER BY ts DESC LIMIT -1 OFFSET 100)"
                 )

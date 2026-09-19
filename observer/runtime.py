@@ -13,6 +13,7 @@ import time
 from pathlib import Path
 
 from . import __version__, proc
+from .activity import clean_record, growth_report, number
 from .analysis import startup_report, summarize_run
 from .config import Config
 from .store import Store
@@ -153,6 +154,27 @@ class Observer:
                 else:
                     row.update(self._detailed.get(key, {}))
                 processes.append(row)
+            previous = {(p["pid"], p["start_ticks"]): p for p in self.processes}
+            current = {(p["pid"], p["start_ticks"]): p for p in processes}
+            changes = []
+            for key in previous.keys() ^ current.keys():
+                row = current.get(key) or previous[key]
+                changes.append(
+                    {
+                        "id": f"proc_{key[0]}_{key[1]}_{int(now * 1000)}",
+                        "start": now,
+                        "end": now,
+                        "category": "process",
+                        "plugin": "AstrBot",
+                        "operation": f"{'appeared' if key in current else 'disappeared'}:{row.get('name', '')}:{key[0]}",
+                        "status": "ok",
+                        "duration_ms": 0,
+                    }
+                )
+            if changes:
+                self.store.save_activities(
+                    run["id"], [clean_record(r, now) for r in changes[:256]]
+                )
             self.processes = processes
             live = {(r["pid"], r["start_ticks"]) for r in processes}
             self._detailed = {k: v for k, v in self._detailed.items() if k in live}
@@ -201,7 +223,11 @@ class Observer:
             ts = float(event["ts"])
         except (KeyError, ValueError, TypeError):
             return False
-        if abs(time.time() - ts) > 60 or proc.identity(pid) is None:
+        if (
+            number(ts) is None
+            or abs(time.time() - ts) > 60
+            or proc.identity(pid) is None
+        ):
             return False
         ident = proc.identity(pid)
         if ident is None or ident[1] != ticks or not self.group:
@@ -213,6 +239,28 @@ class Observer:
             if main is None or main[0] != pid:
                 return False
             run = self._run_for(pid, ticks, ts)
+            if event["kind"] == "activity_batch":
+                records = event.get("records")
+                if not isinstance(records, list) or len(records) > 100:
+                    return False
+                try:
+                    records = [clean_record(item, time.time()) for item in records]
+                except ValueError:
+                    return False
+                state = event.get("recorder") or {}
+                if not isinstance(state, dict):
+                    return False
+                run["activity_status"] = {
+                    "received_at": ts,
+                    "enabled": state.get("enabled") is True,
+                    "dropped": max(0, int(number(state.get("dropped")) or 0)),
+                    "started_at": number(state.get("started_at")),
+                    "handlers": max(0, int(number(state.get("handlers")) or 0)),
+                    "overhead_ms": max(0, number(state.get("overhead_ms")) or 0),
+                }
+                self.store.save_activities(run["id"], records)
+                self.store.save_run(run)
+                return True
             if event["kind"] == "launch":
                 run.update(
                     fingerprint=event.get("fingerprint"),
@@ -228,7 +276,7 @@ class Observer:
                 run["inventory"] = inventory
                 run["inventory_at"] = ts
                 if event.get("astrbot_loaded"):
-                    run["astrbot_loaded_at"] = ts
+                    run.setdefault("astrbot_loaded_at", ts)
             elif event["kind"] == "probe_finished":
                 run["probe_finished_at"] = ts
                 run["probe_overhead_ms"] = event.get("overhead_ms")
@@ -271,6 +319,39 @@ class Observer:
                 )
             self.store.append("events", run["id"], event_record)
         return True
+
+    def activities(self, run_id, **params):
+        run = self.store.run(run_id)
+        if not run:
+            raise ValueError("Unknown run")
+        return {
+            "run_id": run_id,
+            "recorder": run.get("activity_status"),
+            **self.store.activities(run_id, **params),
+        }
+
+    def growth(self, run_id, since, until):
+        run = self.store.run(run_id)
+        if not run:
+            raise ValueError("Unknown run")
+        if (
+            number(since) is None
+            or number(until) is None
+            or not 0 < until - since <= 86400
+        ):
+            raise ValueError("Select a finite interval of at most 24 hours")
+        samples, summary = self.store.growth_samples(run_id, since, until)
+        report = growth_report(samples, run, since, until)
+        if report["available"]:
+            report.update(summary)
+        events = self.activities(run_id, since=since, until=until, limit=200)
+        report.update(
+            run_id=run_id,
+            activities=events["items"],
+            events_truncated=events["next_cursor"] is not None,
+            recorder=events["recorder"],
+        )
+        return report
 
     def overview(self) -> dict:
         with self.lock:

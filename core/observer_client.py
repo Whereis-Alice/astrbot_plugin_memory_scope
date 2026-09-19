@@ -158,6 +158,22 @@ class ObserverClient:
             },
         )
 
+    async def publish_activities(self, records, recorder):
+        raw = await asyncio.to_thread(Path("/proc/self/stat").read_text)
+        ticks = int(raw[raw.rindex(")") + 2 :].split()[19])
+        result = await self.post(
+            "activities",
+            {
+                "pid": os.getpid(),
+                "start_ticks": ticks,
+                "ts": time.time(),
+                "records": records,
+                "recorder": recorder,
+            },
+        )
+        if not result.get("accepted"):
+            raise ValueError("Activity batch was rejected")
+
     async def publish_diagnostics(self, snapshot):
         if not self.configured or not isinstance(snapshot, dict):
             return

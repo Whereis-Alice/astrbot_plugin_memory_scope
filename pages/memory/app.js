@@ -11,6 +11,7 @@ import {
   sortedRows,
 } from "./model.js";
 import { TrendChart } from "./chart.js";
+import { categories, evidenceNote, recorderNote, activityList, growthView, allocationTable } from "./activity-view.js";
 import { t, setLocale } from "./locale.js";
 const $ = (id) => document.getElementById(id);
 const embedded = document.body.dataset.mode === "embedded";
@@ -25,6 +26,15 @@ const S = {
   jobs: [],
   local: {},
   alerts: [],
+  activities: null,
+  activityRange: 3600,
+  activityRun: "",
+  activityAnchor: null,
+  activityCategory: "",
+  activityPlugin: "",
+  activityCursors: [null],
+  activityError: "",
+  trace: {state: "idle"},
   range: 3600,
   metric: "current",
   zero: false,
@@ -52,6 +62,7 @@ let bridge,
 const navs = [
   ["overview", "总览", "overview"],
   ["plugins", "插件", "plugins"],
+  ["activity", "最近活动", "activity"],
   ["startup", "启动记录", "activity"],
   ["diagnostics", "诊断", "scan"],
   ["experiments", "对照", "compare"],
@@ -278,6 +289,8 @@ async function refresh() {
         S.trend = { samples: [] };
         S.local = {};
         localLoaded = false;
+        S.activities = null;
+        S.activityCursors = [null];
         chart?.reset();
       }
       const requestedRange = S.range;
@@ -342,6 +355,7 @@ async function refresh() {
           .map(([ts, value]) => ({ ts, memory: { current: value } })),
       };
     }
+    if (S.tab === "activity" && S.activityCursors.length === 1) await loadActivities();
     S.errors = errors;
   } catch (error) {
     S.errors = [error.message];
@@ -379,6 +393,7 @@ function title() {
   const subtitles = {
     overview: "从服务总量到插件证据，先看变化，再找原因。",
     plugins: "清单、启动增量和诊断证据，放在同一张表里。",
+    activity: "把内存波动与当时的插件、模型和工具活动放在一起。",
     startup: "还原加载顺序，区分导入、构造与初始化。",
     diagnostics: "需要时再深入，日常查看不会自动扫描对象。",
     experiments: "对比停用前后，验证实际能省下多少内存。",
@@ -387,6 +402,7 @@ function title() {
   const labels = {
     overview: "MEMORY OBSERVATORY",
     plugins: "PLUGIN ATLAS",
+    activity: "ACTIVITY JOURNAL",
     startup: "STARTUP TRACE",
     diagnostics: "DIAGNOSTIC LAB",
     experiments: "CONTROLLED COMPARISON",
@@ -411,6 +427,7 @@ function navigate(tab) {
   title();
   render(true);
   if (tab === "diagnostics" || tab === "plugins") loadDiagnostics();
+  if (tab === "activity") loadActivities();
   if (!S.busy && S.mode && !S.overview) refresh();
 }
 function render(force = false) {
@@ -429,6 +446,7 @@ function render(force = false) {
   }
   if (S.tab === "overview") renderOverview(rebuild);
   if (S.tab === "plugins") renderPlugins(rebuild);
+  if (S.tab === "activity") renderActivities(rebuild);
   if (S.tab === "startup") renderStartup(rebuild);
   if (S.tab === "diagnostics") renderDiagnostics(rebuild);
   if (S.tab === "experiments") renderExperiments(rebuild);
@@ -465,7 +483,7 @@ function trendControls() {
 function renderOverview(build) {
   if (build) {
     $("content").innerHTML =
-      `<div id="overview-metrics" class="metrics"></div><div class="overview-grid"><section class="card chart-card">${cardHead(t("内存趋势"), t("真实采样点 · 悬停查看 · 拖动放大"), tag(t("服务整体")))}${trendControls()}<div id="trend" class="trend"></div><p id="trend-note" class="chart-hint"></p><div id="trend-summary" class="chart-summary"></div></section><aside id="insight" class="card insight-card"></aside></div><div class="two-col"><section class="card">${cardHead(t("启动关注项"), t("按加载期间 RSS + Swap 增量排序"), `<button data-go="plugins" class="text-button">${t("全部插件")} ↗</button>`)}<div id="top-plugins"></div></section><section class="card">${cardHead(t("服务进程"), t("进程包含在服务总量中，不要重复相加"), '<span class="tag neutral">/proc</span>')}<div id="processes"></div></section></div>`;
+      `<div id="overview-metrics" class="metrics"></div><div class="overview-grid"><section class="card chart-card">${cardHead(t("内存趋势"), t("真实采样点 · 悬停查看 · 拖动放大"), tag(t("服务整体")))}${trendControls()}<div id="trend" class="trend"></div><div class="growth-actions"><button id="inspect-range" class="text-button">${t("分析当前区间")} ↗</button><span class="muted">${t("点击曲线或按 Enter 查看附近活动；拖动仍为放大。")}</span></div><p id="trend-note" class="chart-hint"></p><div id="trend-summary" class="chart-summary"></div></section><aside id="insight" class="card insight-card"></aside></div><div class="two-col"><section class="card">${cardHead(t("启动关注项"), t("按加载期间 RSS + Swap 增量排序"), `<button data-go="plugins" class="text-button">${t("全部插件")} ↗</button>`)}<div id="top-plugins"></div></section><section class="card">${cardHead(t("服务进程"), t("进程包含在服务总量中，不要重复相加"), '<span class="tag neutral">/proc</span>')}<div id="processes"></div></section></div>`;
     chart = new TrendChart($("trend"), (stats, zoom) => {
       $("trend-summary").innerHTML = [
         ["最低", size(stats.min)],
@@ -478,7 +496,13 @@ function renderOverview(build) {
         )
         .join("");
       $("chart-reset").hidden = !zoom;
-    });
+    }, S.mode === "observer" ? ts => openGrowth(ts - 30, ts + 30) : null);
+    $("inspect-range").disabled = S.mode !== "observer";
+    $("inspect-range").onclick = () => {
+      const points = S.trend.samples || [];
+      const interval = chart.zoom || [points[0]?.ts, points.at(-1)?.ts];
+      if (interval.every(finite)) openGrowth(interval[0], interval[1]);
+    };
     $("chart-metric").onchange = (e) => {
       S.metric = e.target.value;
       chart.reset();
@@ -858,6 +882,87 @@ async function scan(name) {
   }
 }
 
+let activityRequest = 0;
+async function loadActivities() {
+  if (S.mode !== "observer" || !S.overview?.run?.id) return;
+  const request = ++activityRequest;
+  const run = S.runs.find(r => r.id === S.activityRun) || S.overview.run;
+  if (S.activityCursors.length === 1) S.activityAnchor = run.ended_at || Date.now()/1000;
+  const params = { id: run.id, since: Math.max(0, S.activityAnchor - S.activityRange), until: S.activityAnchor,
+    category: S.activityCategory, plugin: S.activityPlugin, limit: 50 };
+  const cursor = S.activityCursors.at(-1);
+  if (cursor) params.before = cursor;
+  try {
+    const result = await api("activities", params);
+    if (request !== activityRequest) return;
+    S.activities = result;
+    S.activityError = "";
+    if (embedded) {
+      try { S.trace = await api("trace_status", {}, "GET", true); } catch { /* Optional on older plugins. */ }
+    }
+  } catch (error) {
+    if (request !== activityRequest) return;
+    S.activityError = error.message;
+    S.activities = null;
+  }
+  if (request === activityRequest && S.tab === "activity") renderActivities(false);
+}
+function renderActivities(build) {
+  if (S.mode !== "observer") {
+    $("content").innerHTML = `<section class="card">${empty(t("需要连接独立后端"), t("活动记录与增长分析由独立后端保存，请先配置连接。"))}</section>`;
+    return;
+  }
+  if (build || !$("activity-results")) {
+    const plugins = (S.runs.find(r => r.id === S.activityRun) || S.overview.run)?.inventory || [];
+    $("content").innerHTML = `<section class="card activity-card">${cardHead(t("最近活动"), t("仅记录功能元数据 · 自动保存 · 与趋势时间对齐"))}
+      <div class="activity-filters">
+      <label>${t("启动批次")}<select id="activity-run"><option value="">${t("当前")}</option>${S.runs.filter(r=>r.id!==S.overview.run?.id).map(r=>`<option value="${esc(r.id)}" ${r.id===S.activityRun?"selected":""}>${esc(stamp(r.started_at,true))} · PID ${esc(r.pid)}</option>`).join("")}</select></label>
+      <label>${t("时间范围")}<select id="activity-range">${[[900,"15m"],[3600,"1h"],[21600,"6h"],[86400,"24h"]].map(([v,l]) => `<option value="${v}" ${S.activityRange===v?"selected":""}>${l}</option>`).join("")}</select></label>
+      <label>${t("活动类型")}<select id="activity-category"><option value="">${t("全部类型")}</option>${Object.entries(categories).map(([v,l])=>`<option value="${v}" ${S.activityCategory===v?"selected":""}>${t(l)}</option>`).join("")}</select></label>
+      <label>${t("插件")}<select id="activity-plugin"><option value="">${t("全部插件")}</option><option value="AstrBot" ${S.activityPlugin==="AstrBot"?"selected":""}>AstrBot</option><option value="AstrBot/MCP" ${S.activityPlugin==="AstrBot/MCP"?"selected":""}>AstrBot/MCP</option>${plugins.map(p => `<option value="${esc(p.root_dir_name || p.name)}" ${S.activityPlugin===(p.root_dir_name||p.name)?"selected":""}>${esc(p.display_name || p.name)}</option>`).join("")}</select></label>
+      </div><div class="card-body">${evidenceNote()}<div id="recorder-state"></div></div><div id="activity-results"></div><div id="activity-pager" class="activity-pager"></div></section>
+      <section class="card section-gap">${cardHead(t("限时分配追踪"), t("默认关闭 · 手动开启 · 到时退出"))}<div class="card-body"><p class="data-note">${t("仅追踪开启后的 Python 分配位置，不是插件独占内存，也不覆盖所有原生库。会增加 CPU 和内存开销；限时 30 秒，追踪器记账超过 16 MiB 时提前退出。内存检查不是硬性进程内存上限。")}</p><div id="trace-controls"></div></div></section>`;
+    for (const [id, key] of [["activity-run", "activityRun"], ["activity-range", "activityRange"], ["activity-category", "activityCategory"], ["activity-plugin", "activityPlugin"]]) {
+      $(id).onchange = e => {
+        S[key] = id === "activity-range" ? Number(e.target.value) : e.target.value;
+        S.activityCursors = [null];
+        if (id === "activity-run") { S.activityPlugin = ""; S.activities = null; renderActivities(true); }
+        loadActivities();
+      };
+    }
+  }
+  $("recorder-state").innerHTML = recorderNote(S.activities?.recorder);
+  $("activity-results").innerHTML = S.activityError ? empty(t("活动记录读取失败"), S.activityError + " · " + t("请确认插件与独立后端都已更新。")) :
+    S.activities ? activityList(S.activities.items, {recorder: S.activities.recorder}) : empty(t("正在读取记录"));
+  $("activity-pager").innerHTML = `<button id="activity-prev" ${S.activityCursors.length===1?"disabled":""}>${t("上一页")}</button><span class="muted">${S.activityCursors.length===1?t("最新记录自动刷新"):t("浏览历史时暂停翻页刷新")}</span><button id="activity-next" ${S.activities?.next_cursor?"":"disabled"}>${t("更早记录")}</button>`;
+  $("activity-prev").onclick = () => { S.activityCursors.pop(); loadActivities(); };
+  $("activity-next").onclick = () => { S.activityCursors.push(S.activities.next_cursor); loadActivities(); };
+  const active = ["starting", "running"].includes(S.trace.state);
+  $("trace-controls").innerHTML = `<p>${t("追踪状态")}: ${esc(t(({idle:"未开启",starting:"进行中",running:"进行中",complete:"已结束",limited:"达到保护限制",cancelled:"已取消",error:"追踪不可用"})[S.trace.state] || "未知"))}</p><button id="trace-start" ${!embedded || active?"disabled":""}>${t("追踪接下来 30 秒")}</button> <button id="trace-cancel" ${!embedded || !active?"disabled":""}>${t("停止追踪")}</button>${!embedded?note(t("请在 AstrBot 插件页手动开启；这里可以查看保存的追踪记录。")):""}${allocationTable(S.trace.allocations)}`;
+  $("trace-start").onclick = async () => {
+    if (!await confirmAction(t("限时分配追踪"), t("追踪会增加 CPU 和内存开销，可能影响回复速度。只追踪接下来的 30 秒，不重启机器人。确定继续？"))) return;
+    try { S.trace = await api("trace", {seconds:30}, "POST", true); renderActivities(false); } catch (e) { toast(e.message); }
+  };
+  $("trace-cancel").onclick = async () => {
+    try { S.trace = await api("trace", {action:"cancel"}, "POST", true); renderActivities(false); } catch (e) { toast(e.message); }
+  };
+}
+async function openGrowth(since, until, runId = S.overview?.run?.id) {
+  if (S.mode !== "observer" || !S.overview?.run?.id) { toast(t("需要连接独立后端")); return; }
+  if (!finite(since) || !finite(until) || until <= since) { toast(t("区间采样不足")); return; }
+  since = Math.max(since, until - 86400, 0);
+  const request = ++growthRequest;
+  drawerFocus = document.activeElement;
+  $("detail").innerHTML = `<h1 id="detail-title">${t("增长分析")}</h1>${empty(t("正在读取记录"))}`;
+  showDrawer();
+  try {
+    const report = await api("growth", {id:runId, since, until});
+    if (request === growthRequest) $("detail").innerHTML = growthView(report);
+  } catch (error) {
+    if (request === growthRequest) $("detail").innerHTML = `<h1 id="detail-title">${t("增长分析")}</h1>${empty(t("活动记录读取失败"), error.message + " · " + t("请确认插件与独立后端都已更新。"))}`;
+  }
+}
+
 function renderExperiments(build) {
   if (S.mode !== "observer") {
     $("content").innerHTML =
@@ -1004,7 +1109,12 @@ function openDetail(id, historical = false) {
   drawerFocus = document.activeElement;
   $("detail").innerHTML =
     `<h1 id="detail-title">${esc(row.label)}</h1><p class="identity mono muted">${esc(row.id)}</p><p>${tag(row.activated === true ? t("已启用") : row.activated === false ? t("已停用") : t("未同步"), "neutral")} ${row.version ? tag(row.version, "neutral") : ""}</p><div class="metrics">${metric(t("启动窗口增量"), row.delta, t("RSS + Swap；非当前独占占用"))}${metric(t("加载耗时"), finite(row.duration) ? Number((row.duration / 1000).toFixed(3)) : null, t("该插件记录到的阶段合计"), "s", "clock")}</div><p class="data-note">${t("窗口增量可能含并发工作。共享依赖首次出现在这里，不代表只被这个插件使用。")}</p><h2>${t("阶段证据")}</h2>${row.phases.length ? `<div class="table-wrap"><table><thead><tr><th>${t("阶段")}</th><th>${t("耗时")}</th><th>RSS + Swap Δ</th></tr></thead><tbody>${row.phases.map((p) => `<tr><td>${phaseName(p.phase)} ${p.failed ? tag(t("失败"), "bad") : ""}</td><td class="mono">${duration(p.duration_ms)}</td><td class="mono num">${signedSize(p.process_rss_swap_delta)}</td></tr>`).join("")}</tbody></table></div>` : empty(t("没有启动阶段证据"), t("插件清单仍可见；需要早期探针才能记录完整导入。"))}<h2>${t("首次出现的依赖")}</h2><div class="package-list">${row.packages.map((p) => `<span>${esc(p.name)}</span>`).join("") || `<p class="muted">${t("未记录")}</p>`}</div><h2>${t("源码依赖线索")}</h2><div class="package-list">${auditDependencyHtml}</div><h2>${t("关联子进程")}</h2>${row.processes.length ? processTable(row.processes) : `<p class="muted">${t("未发现插件启动关联")}</p>`}${row.local ? `<h2>${t("本地诊断证据")}</h2>${rawDetails(row.local)}` : ""}${rawDetails({ phases: row.phases, packages: row.packages, audit_imports: auditImports })}`;
+  showDrawer("PLUGIN INSIGHT");
+}
+function showDrawer(label = "GROWTH INSIGHT") {
+  $("drawer").querySelector(".eyebrow").textContent = label;
   $("drawer").hidden = false;
+  $("drawer").querySelector(".drawer").scrollTop = 0;
   $("workspace").inert = true;
   document.querySelector(".topbar").inert = true;
   document.querySelector(".navrow").inert = true;
@@ -1012,7 +1122,9 @@ function openDetail(id, historical = false) {
   document.body.style.overflow = "hidden";
   $("close-drawer").focus();
 }
+let growthRequest = 0;
 function closeDrawer() {
+  growthRequest++;
   $("drawer").hidden = true;
   $("workspace").inert = false;
   document.querySelector(".topbar").inert = false;
@@ -1033,6 +1145,7 @@ function exportReport() {
           trend: S.trend,
           selected_startup: S.historyReport,
           diagnostics: S.local,
+          activities: S.activities,
           experiments: S.jobs,
         },
         null,
@@ -1054,6 +1167,7 @@ document.addEventListener("click", async (e) => {
   const button = e.target.closest("button");
   if (!button) return;
   if (button.dataset.go) navigate(button.dataset.go);
+  if (button.dataset.growthStart) openGrowth(Number(button.dataset.growthStart), Number(button.dataset.growthEnd), S.activities?.run_id);
   if (button.dataset.plugin) openDetail(button.dataset.plugin);
   if (button.dataset.historyPlugin)
     openDetail(button.dataset.historyPlugin, true);
@@ -1169,6 +1283,7 @@ $("locale").onchange = (e) => {
 $("refresh").onclick = () => {
   if (!S.mode && embedded) boot();
   else {
+    if (S.tab === "activity") S.activityCursors = [null];
     refresh();
     if (S.tab === "diagnostics") loadDiagnostics(true);
   }

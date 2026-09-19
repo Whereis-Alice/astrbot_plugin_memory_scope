@@ -10,6 +10,7 @@ import platform
 import sys
 import threading
 import time
+from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Any
 
@@ -251,6 +252,7 @@ class MemoryCollector:
     ) -> None:
         self.context = context
         self.settings = settings
+        self.activity = None
         self.self_plugin_name = self_plugin_name
         self.registry = PluginRegistry(context)
         self.ledger = get_ledger(settings.import_hook_max_overhead_ms)
@@ -605,14 +607,20 @@ class MemoryCollector:
                 run_audit_now = self.settings.dep_audit_enabled and self._audit is None
             else:
                 run_audit_now = bool(audit)
-            raw = await asyncio.to_thread(
-                self._collect_blocking,
-                deep,
-                run_census_now,
-                run_audit_now,
-                deep_limits,
-                audit_complete=audit_complete,
-            )
+            operations = [name for name, active in (
+                ("audit", run_audit_now), ("census", run_census_now), ("deep", deep)
+            ) if active]
+            span = self.activity.span("diagnostic", self.self_plugin_name,
+                diagnostic_source + ":" + "+".join(operations)) if self.activity and operations else nullcontext()
+            with span:
+                raw = await asyncio.to_thread(
+                    self._collect_blocking,
+                    deep,
+                    run_census_now,
+                    run_audit_now,
+                    deep_limits,
+                    audit_complete=audit_complete,
+                )
             process = self.process_stats(
                 include_object_count=deep and self.settings.include_object_count,
             )
@@ -1163,7 +1171,9 @@ class MemoryCollector:
 
     async def force_gc(self) -> dict[str, Any]:
         before = self.read_rss()
-        collected = await asyncio.to_thread(gc.collect)
+        span = self.activity.span("diagnostic", self.self_plugin_name, "gc") if self.activity else nullcontext()
+        with span:
+            collected = await asyncio.to_thread(gc.collect)
         after = self.read_rss()
         return {
             "collected": int(collected),

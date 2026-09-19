@@ -9,6 +9,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
+from .activity import CATEGORIES, number
 from .analysis import compare
 from .experiments import Experiments
 
@@ -60,6 +61,10 @@ def make_server(observer, assets: Path | None = None):
                     "/app.js": ("app.js", "text/javascript; charset=utf-8"),
                     "/chart.js": ("chart.js", "text/javascript; charset=utf-8"),
                     "/model.js": ("model.js", "text/javascript; charset=utf-8"),
+                    "/activity-view.js": (
+                        "activity-view.js",
+                        "text/javascript; charset=utf-8",
+                    ),
                     "/locale.js": ("locale.js", "text/javascript; charset=utf-8"),
                     "/style.css": ("style.css", "text/css; charset=utf-8"),
                 }
@@ -125,6 +130,37 @@ def make_server(observer, assets: Path | None = None):
                     result = compare(groups)
                 elif url.path == "/api/experiments":
                     result = observer.store.jobs()
+                elif url.path in {"/api/activities", "/api/growth"}:
+                    run_id = query.get(
+                        "id", [(observer.current_run or {}).get("id", "")]
+                    )[0]
+                    since = float(query.get("since", ["0"])[0])
+                    until = float(
+                        query.get("until", [str(__import__("time").time())])[0]
+                    )
+                    if (
+                        number(since) is None
+                        or number(until) is None
+                        or since < 0
+                        or until < since
+                    ):
+                        raise ValueError("Invalid time interval")
+                    if url.path.endswith("growth"):
+                        result = observer.growth(run_id, since, until)
+                    else:
+                        category = query.get("category", [""])[0]
+                        if category and category not in CATEGORIES:
+                            raise ValueError("Invalid category")
+                        before = int(query["before"][0]) if "before" in query else None
+                        result = observer.activities(
+                            run_id,
+                            since=since,
+                            until=until,
+                            before=before,
+                            category=category,
+                            plugin=query.get("plugin", [""])[0][:120],
+                            limit=int(query.get("limit", ["50"])[0]),
+                        )
                 elif url.path == "/api/diagnostics":
                     run_id = query.get(
                         "id", [(observer.current_run or {}).get("id", "")]
@@ -149,8 +185,13 @@ def make_server(observer, assets: Path | None = None):
                 if not isinstance(payload, dict):
                     raise TypeError("Expected JSON object")
                 path = urlsplit(self.path).path
-                if path == "/api/inventory":
-                    event = dict(payload, kind="inventory")
+                if path in {"/api/inventory", "/api/activities"}:
+                    event = dict(
+                        payload,
+                        kind="inventory"
+                        if path.endswith("inventory")
+                        else "activity_batch",
+                    )
                     result = {
                         "accepted": observer.accept_event(
                             {"token": observer.config.token, "event": event}

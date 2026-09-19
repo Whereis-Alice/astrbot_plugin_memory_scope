@@ -226,6 +226,93 @@ def snapshot(page, name):
         page.screenshot(path=str(Path(directory) / (name + ".png")), full_page=True)
 
 
+@pytest.mark.parametrize("width,height", [(1440, 1000), (390, 844)])
+def test_activity_page_and_growth_inspection(preview, width, height):
+    url, token, observer = preview
+    now = time.time()
+    run = observer.current_run
+    run["activity_status"] = {"enabled": True, "received_at": now, "handlers": 12, "dropped": 0}
+    observer.store.save_run(run)
+    observer.store.save_activities(run["id"], [
+        {"id": f"ui-{i}", "start": now - 120 + i, "end": now - 110 + i,
+         "category": "tool" if i % 2 else "handler", "plugin": "astrbot_plugin_example",
+         "operation": "render_image", "status": "ok", "duration_ms": 10000}
+        for i in range(55)
+    ])
+    old = dict(run, id="old-run", started_at=now-1000, ended_at=now-500)
+    observer.store.save_run(old)
+    observer.store.save_activities(old["id"], [{"id":"old", "start":now-510, "end":now-505,
+        "category":"lifecycle", "plugin":"AstrBot", "operation":"previous_boot",
+        "status":"ok", "duration_ms":5000}])
+    with playwright.sync_playwright() as pw:
+        browser = pw.chromium.launch(headless=True)
+        page = browser.new_page(viewport={"width":width, "height":height})
+        errors, posts = [], []
+        page.on("pageerror", lambda e: errors.append(str(e)))
+        page.on("request", lambda r: posts.append(r.url) if r.method == "POST" else None)
+        page.goto(url)
+        page.get_by_label("后端访问凭据").fill(token)
+        page.get_by_role("button", name="连接", exact=True).click()
+        svg = page.locator("#trend svg")
+        svg.wait_for()
+        svg.focus()
+        page.keyboard.press("ArrowRight")
+        page.keyboard.press("Enter")
+        page.get_by_role("heading", name="增长构成").wait_for()
+        assert "不等于造成" in page.locator("#detail").inner_text()
+        page.keyboard.press("Escape")
+        assert page.evaluate("document.activeElement.tagName.toLowerCase()") == "svg"
+        svg.click(position={"x":150, "y":90})
+        page.get_by_role("heading", name="增长构成").wait_for()
+        page.keyboard.press("Escape")
+        page.locator("#inspect-range").click()
+        page.get_by_role("heading", name="增长构成").wait_for()
+        assert page.locator("#detail .activity-item").count() == 55
+        snapshot(page, f"growth-{width}")
+        page.keyboard.press("Escape")
+        page.locator('[data-go="activity"]').click()
+        playwright.expect(page.locator("#activity-results .activity-item")).to_have_count(50)
+        assert "已连接" in page.locator("#recorder-state").inner_text()
+        for theme in ("paper", "midnight", "plum"):
+            page.locator("#theme").click()
+            page.locator(f'[data-theme-choice="{theme}"]').click()
+            snapshot(page, f"activity-{theme}-{width}")
+        page.locator("#activity-next").click()
+        playwright.expect(page.locator("#activity-results .activity-item")).to_have_count(5)
+        page.locator("#activity-prev").click()
+        playwright.expect(page.locator("#activity-results .activity-item")).to_have_count(50)
+        page.locator("#activity-category").select_option("tool")
+        playwright.expect(page.locator("#activity-results .activity-item")).to_have_count(27)
+        page.locator("#activity-category").select_option("trace")
+        page.get_by_role("heading", name="这个范围没有活动记录").wait_for()
+        page.locator("#activity-category").select_option("")
+        page.locator("#activity-run").select_option("old-run")
+        page.get_by_text("previous_boot", exact=True).wait_for()
+        page.get_by_role("button", name="查看同期内存").click()
+        page.get_by_role("heading", name="区间采样不足").wait_for()
+        assert "previous_boot" in page.locator("#detail").inner_text()
+        assert not errors and not posts
+        browser.close()
+
+
+def test_embedded_activity_trace_is_never_automatically_started(preview):
+    url, token, observer = preview
+    with playwright.sync_playwright() as pw:
+        browser = pw.chromium.launch(headless=True)
+        page = browser.new_page()
+        calls = mount_bridge(page, url, token, extra={"trace_status":{"state":"idle"}})
+        page.goto(url + "/plugin/index.html#activity")
+        page.get_by_role("button", name="追踪接下来 30 秒").wait_for()
+        assert any(name == "observer_activities" for name, _, _ in calls)
+        assert not any(method == "POST" for _, _, method in calls)
+        page.get_by_role("button", name="追踪接下来 30 秒").click()
+        page.locator("#confirm").wait_for()
+        assert "可能影响回复速度" in page.locator("#confirm").inner_text()
+        page.keyboard.press("Escape")
+        assert not any(method == "POST" for _, _, method in calls)
+        browser.close()
+
+
 def mount_bridge(page, url, token, status=None, extra=None):
     assets = Path(__file__).resolve().parents[1] / "pages/memory"
     calls = []
@@ -236,6 +323,7 @@ def mount_bridge(page, url, token, status=None, extra=None):
             "index.html",
             "app.js",
             "model.js",
+            "activity-view.js",
             "chart.js",
             "locale.js",
             "style.css",

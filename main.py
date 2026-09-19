@@ -6,12 +6,9 @@ at module top level, how live objects are distributed per plugin, and how the
 process RSS moves over time.  Results are exposed both on the Dashboard page
 (``pages/memory``) and through the ``/mem`` chat commands.
 
-v2.0 removed tracemalloc completely. It is expensive during the import phase:
-v1.0.0 turned
-it on in this constructor and stretched plugin loading from 39 s to 21 minutes
-on a 2-core / 1.6 GB host -- and its per-plugin numbers are not trustworthy
-anyway, because a shared dependency is billed entirely to whichever plugin
-happened to import it first.
+Startup and routine observation never enable tracemalloc. Allocation tracing
+is a separate, explicitly confirmed, short-lived runtime action. Shared and
+concurrent memory changes are evidence, not exclusive plugin accounting.
 """
 
 from __future__ import annotations
@@ -25,6 +22,8 @@ from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star, register
 
+from .core.activity_recorder import ActivityRecorder
+from .core.allocation_trace import AllocationTrace
 from .core.collector import MemoryCollector, Settings
 from .core.import_cost import get_ledger
 from .core.observer_api import ObserverApi
@@ -42,7 +41,7 @@ from .core.text_report import (
 from .core.web_api import MemoryScopeWebApi
 
 PLUGIN_ID = "astrbot_plugin_memory_scope"
-PLUGIN_VERSION = "4.1.3"
+PLUGIN_VERSION = "4.2.0"
 # Key used with the plugin KV store so history survives a reload.
 HISTORY_KEY = "history"
 DIAGNOSTIC_KEY = "diagnostic_snapshot"
@@ -73,6 +72,12 @@ class MemoryScopePlugin(Star):
         self.raw_config = config
         self.settings = Settings.from_config(config or {})
         self.observer = ObserverClient(config or {})
+        self.activity = ActivityRecorder(
+            self.observer,
+            enabled=(config or {}).get("activity_recording_enabled", True),
+            max_per_minute=(config or {}).get("activity_max_per_minute", 300),
+        )
+        self.allocation_trace = AllocationTrace(self.activity)
         self._inventory_task: asyncio.Task | None = None
         self._diagnostic_task: asyncio.Task | None = None
         if self.observer.enabled:
@@ -96,6 +101,7 @@ class MemoryScopePlugin(Star):
             self.collector = MemoryCollector(
                 context, self.settings, PLUGIN_ID, defer_registry=self.observer.enabled
             )
+            self.collector.activity = self.activity
             self.web_api = MemoryScopeWebApi(
                 PLUGIN_ID,
                 self.collector,
@@ -111,6 +117,7 @@ class MemoryScopePlugin(Star):
 
             self._web_routes = self.web_api.register(context)
             ObserverApi(self.observer).register(context, PLUGIN_ID)
+            self.allocation_trace.register(context, PLUGIN_ID)
             if not self._web_routes:
                 logger.warning(
                     "MemoryScope 未能注册 Web API，Dashboard 页面将不可用"
@@ -166,6 +173,8 @@ class MemoryScopePlugin(Star):
         return "done" if status.get("plugin_count") else "off"
 
     async def terminate(self) -> None:
+        await self.allocation_trace.close()
+        await self.activity.close()
         if self._inventory_task:
             self._inventory_task.cancel()
             await asyncio.gather(self._inventory_task, return_exceptions=True)
@@ -175,7 +184,7 @@ class MemoryScopePlugin(Star):
             task.cancel()
             try:
                 await task
-            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001,S110
                 pass
         diagnostic_task = self._diagnostic_task
         self._diagnostic_task = None
@@ -196,6 +205,7 @@ class MemoryScopePlugin(Star):
         """Loading is over: stop accounting imports and re-read the catalog."""
 
         self._loaded_seen = True
+        self.activity.start()
         ledger = self._ledger()
         if ledger.installed:
             ledger.uninstall()
@@ -310,6 +320,7 @@ class MemoryScopePlugin(Star):
     async def _sampler_loop(self) -> None:
         await asyncio.sleep(FIRST_SAMPLE_DELAY_SECONDS)
         self._release_orphaned_hook()
+        self.activity.start()  # Handles runtime installation/reload too.
         while True:
             interval = max(10, self.settings.sample_interval_seconds)
             try:
@@ -357,11 +368,60 @@ class MemoryScopePlugin(Star):
     async def _publish_inventory(self, loaded=False) -> None:
         try:
             await self.observer.publish_inventory(self.context, loaded=loaded)
-            await self.observer.publish_diagnostics(self.collector.diagnostic_snapshot())
+            await self.observer.publish_diagnostics(
+                self.collector.diagnostic_snapshot()
+            )
         except ValueError as exc:
             logger.debug("MemoryScope 独立后端状态同步失败: %s", exc)
 
     # ------------------------------------------------------------------
+    # Runtime hooks: identifiers only. Arguments, results and messages are never read.
+    @filter.on_plugin_loaded()
+    async def _activity_loaded(self, metadata):
+        name = getattr(metadata, "root_dir_name", None) or getattr(
+            metadata, "name", "plugin"
+        )
+        self.activity.end(self.activity.begin("lifecycle", name, "loaded"))
+
+    @filter.on_plugin_unloaded()
+    async def _activity_unloaded(self, metadata):
+        name = getattr(metadata, "root_dir_name", None) or getattr(
+            metadata, "name", "plugin"
+        )
+        self.activity.end(self.activity.begin("lifecycle", name, "unloaded"))
+
+    @filter.on_llm_request()
+    async def _activity_llm_start(self, event, request):
+        self.activity.begin_key(
+            ("llm", id(event), id(asyncio.current_task())),
+            "llm",
+            "AstrBot",
+            "model_request",
+        )
+
+    @filter.on_llm_response()
+    async def _activity_llm_end(self, event, response):
+        self.activity.end_key(("llm", id(event), id(asyncio.current_task())))
+
+    @filter.on_using_llm_tool()
+    async def _activity_tool_start(self, event, tool, tool_args):
+        module = getattr(getattr(tool, "handler", None), "__module__", "")
+        owner = next(
+            (part for part in module.split(".") if part.startswith("astrbot_plugin_")),
+            "AstrBot/MCP",
+        )
+        name = getattr(tool, "name", "tool")
+        self.activity.begin_key(
+            ("tool", id(event), id(tool), id(asyncio.current_task())),
+            "tool",
+            owner,
+            name,
+        )
+
+    @filter.on_llm_tool_respond()
+    async def _activity_tool_end(self, event, tool, tool_args, tool_result):
+        self.activity.end_key(("tool", id(event), id(tool), id(asyncio.current_task())))
+
     # chat commands
     # ------------------------------------------------------------------
     @filter.command_group("mem", alias={"memoryscope"})

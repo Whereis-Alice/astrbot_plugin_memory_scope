@@ -1850,3 +1850,31 @@ td.right .num {
 #run-select {
   max-width: min(600px, 100%);
 }
+
+.growth-actions { display:flex; align-items:center; flex-wrap:wrap; gap:12px; padding:0 25px 12px; font-size:12px; }
+.activity-filters { display:flex; flex-wrap:wrap; gap:18px; padding:18px 24px; border-bottom:1px solid var(--line); }
+.activity-filters label { display:grid; gap:7px; font-size:12px; flex:1; min-width:140px; }
+.activity-filters select { width:100%; max-width:100%; }
+.activity-item { display:grid; grid-template-columns:145px minmax(0,1fr) 155px; gap:22px; padding:22px 25px; border-top:1px solid var(--line); border-left:3px solid var(--accent); }
+.activity-item[data-category="diagnostic"],.activity-item[data-category="trace"] { border-left-color:var(--warning, #d59b70); }
+.activity-time { font-size:12px; color:var(--muted); }
+.activity-time small { display:block; margin-top:8px; }
+.activity-heading { display:flex; flex-wrap:wrap; align-items:center; gap:10px; }
+.activity-operation { margin-top:8px; font-size:12px; overflow-wrap:anywhere; color:var(--muted); }
+.activity-meta { display:flex; flex-direction:column; align-items:flex-end; gap:8px; font-size:12px; }
+.activity-body { min-width:0; overflow-wrap:anywhere; }
+.activity-pager { display:flex; align-items:center; justify-content:space-between; padding:20px 25px; gap:12px; font-size:12px; }
+.growth-summary { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:16px; margin:24px 0; }
+.growth-summary small { display:block; color:var(--muted); margin-bottom:9px; }
+.growth-summary strong { font-family:var(--mono); font-size:18px; }
+.drawer .activity-item { grid-template-columns:115px minmax(0,1fr); padding:18px 0 18px 12px; gap:12px; }
+.drawer .activity-meta { grid-column:2; flex-direction:row; align-items:center; }
+@media(max-width:600px) {
+  .activity-item { grid-template-columns:minmax(0,1fr); gap:12px; padding:18px; }
+  .activity-meta { align-items:center; flex-direction:row; flex-wrap:wrap; }
+  .activity-time small { display:inline; margin-left:12px; }
+  .activity-pager { flex-wrap:wrap; }
+  .growth-summary { grid-template-columns:minmax(0,1fr); }
+  .drawer .activity-item { grid-template-columns:minmax(0,1fr); }
+  .drawer .activity-meta { grid-column:1; }
+}
