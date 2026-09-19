@@ -7,6 +7,7 @@ import sqlite3
 import threading
 import time
 import zlib
+from bisect import bisect_left, bisect_right
 from pathlib import Path
 
 
@@ -187,7 +188,11 @@ class Store:
         plugin="",
         category="",
         limit=50,
+        plugin_filter=None,
     ) -> dict:
+        from .activity import clean_plugin_filter
+
+        selected = clean_plugin_filter(plugin_filter)
         where, params = ["run=?", "COALESCE(end,start+1800)>=?"], [run_id, since]
         if until is not None:
             where.append("start<=?")
@@ -199,6 +204,14 @@ class Store:
             if value:
                 where.append(f"{field}=?")
                 params.append(value)
+        if selected["mode"] == "include" and not selected["plugins"]:
+            where.append("0=1")
+        elif selected["mode"] != "all" and selected["plugins"]:
+            operator = "IN" if selected["mode"] == "include" else "NOT IN"
+            where.append(
+                f"plugin {operator} ({','.join('?' for _ in selected['plugins'])})"
+            )
+            params.extend(selected["plugins"])
         limit = max(1, min(int(limit), 200))
         with self.lock:
             rows = self.db.execute(
@@ -209,7 +222,106 @@ class Store:
         return {
             "items": items,
             "next_cursor": items[-1]["seq"] if len(rows) > limit else None,
+            "plugin_filter": selected,
         }
+
+    def activity_plugins(self, run_id: str) -> list[str]:
+        with self.lock:
+            rows = self.db.execute(
+                "SELECT DISTINCT plugin FROM activities WHERE run=? ORDER BY plugin LIMIT 2000",
+                (run_id,),
+            ).fetchall()
+        return [row[0] for row in rows if row[0]]
+
+    def activity_memory(
+        self, run_id: str, items: list[dict], *, max_distance=10
+    ) -> None:
+        """Annotate one page using existing samples, not per-callback measurements.
+
+        Cache compact endpoints/windows only. A burst of microsecond callbacks
+        normally shares the same pair; never retain decoded process histories.
+        """
+        from .activity import difference
+
+        samples, windows = {}, {}
+
+        def compact(row):
+            if row is None:
+                return None
+            if row[0] not in samples:
+                value = unpack(row[2])
+                samples[row[0]] = {"ts": row[1], "memory": value.get("memory", {})}
+            return samples[row[0]]
+
+        with self.lock:
+            for item in items[:200]:
+                evidence = {"available": False, "reason": "unfinished", "causal": False}
+                item["memory_window"] = evidence
+                end = item.get("end")
+                if end is None or item.get("status") == "expired":
+                    continue
+                left = compact(
+                    self.db.execute(
+                        "SELECT id,ts,payload FROM samples WHERE run=? AND ts<=? ORDER BY ts DESC,id DESC LIMIT 1",
+                        (run_id, item["start"]),
+                    ).fetchone()
+                )
+                if left is None:
+                    evidence["reason"] = "missing_samples"
+                    continue
+                right = compact(
+                    self.db.execute(
+                        "SELECT id,ts,payload FROM samples WHERE run=? AND ts>=? AND ts>? ORDER BY ts,id LIMIT 1",
+                        (run_id, end, left["ts"]),
+                    ).fetchone()
+                )
+                if right is None:
+                    evidence["reason"] = (
+                        "pending_sample"
+                        if time.time() - end < max_distance
+                        else "missing_samples"
+                    )
+                    continue
+                if (
+                    item["start"] - left["ts"] > max_distance
+                    or right["ts"] - end > max_distance
+                ):
+                    evidence["reason"] = "distant_samples"
+                    continue
+                key = (left["ts"], right["ts"])
+                if key not in windows:
+                    windows[key] = {
+                        "available": True,
+                        "causal": False,
+                        "actual": list(key),
+                        "seconds": right["ts"] - left["ts"],
+                        "activity_count": 0,
+                        "deltas": {
+                            name: difference(
+                                left["memory"].get(name), right["memory"].get(name)
+                            )
+                            for name in ("current", "anon", "swap")
+                        },
+                    }
+                item["memory_window"] = windows[key]
+            if windows:
+                # One metadata-only pass for the page, not one full scan per row.
+                bounds = list(windows)
+                rows = self.db.execute(
+                    "SELECT start,COALESCE(end,start+1800) FROM activities "
+                    "WHERE run=? AND start<=? AND COALESCE(end,start+1800)>=?",
+                    (run_id, max(b for _, b in bounds), min(a for a, _ in bounds)),
+                )
+                starts, ends = [], []
+                for start, end in rows:
+                    starts.append(start)
+                    ends.append(end)
+                starts.sort()
+                ends.sort()
+                for (left, right), window in windows.items():
+                    window["activity_count"] = bisect_right(
+                        starts, right
+                    ) - bisect_left(ends, left)
 
     def save_job(self, job: dict) -> None:
         with self.lock, self.db:

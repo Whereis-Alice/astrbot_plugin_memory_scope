@@ -320,14 +320,22 @@ class Observer:
             self.store.append("events", run["id"], event_record)
         return True
 
-    def activities(self, run_id, **params):
+    def activities(self, run_id, *, include_memory=True, **params):
         run = self.store.run(run_id)
         if not run:
             raise ValueError("Unknown run")
+        result = self.store.activities(run_id, **params)
+        if include_memory:
+            self.store.activity_memory(
+                run_id,
+                result["items"],
+                max_distance=max(10, min(30, self.config.interval * 2)),
+            )
         return {
             "run_id": run_id,
             "recorder": run.get("activity_status"),
-            **self.store.activities(run_id, **params),
+            "plugin_options": self.store.activity_plugins(run_id),
+            **result,
         }
 
     def growth(self, run_id, since, until):
@@ -344,7 +352,9 @@ class Observer:
         report = growth_report(samples, run, since, until)
         if report["available"]:
             report.update(summary)
-        events = self.activities(run_id, since=since, until=until, limit=200)
+        events = self.activities(
+            run_id, since=since, until=until, limit=200, include_memory=False
+        )
         report.update(
             run_id=run_id,
             activities=events["items"],

@@ -352,7 +352,31 @@
       "进程按 PID 和启动标识匹配；新增或退出的进程不拿缺失值当零。采样之间的短命进程可能遗漏。": "Processes are matched by PID and start identity. Missing endpoints are not zero. Short-lived processes between samples may be missed.",
       "至少需要两个真实采样点。请选择更大的区间，或等待下一次采样。": "At least two actual samples are needed. Choose a larger interval or wait for another sample.",
       "同期活动": "Overlapping activity",
-      "活动较多，仅显示最近 200 条；可到最近活动页缩小范围筛选。": "Only the latest 200 overlapping records are shown. Narrow the range on the activity page for more detail."
+      "活动较多，仅显示最近 200 条；可到最近活动页缩小范围筛选。": "Only the latest 200 overlapping records are shown. Narrow the range on the activity page for more detail.",
+      "筛选方式": "Filter mode",
+      "只看所选": "Only selected",
+      "排除所选": "Exclude selected",
+      "搜索插件名称或 ID": "Search plugin name or ID",
+      "已勾选": "Selected",
+      "清空勾选": "Clear selection",
+      "应用后自动记住选择": "Remembered after applying",
+      "应用筛选": "Apply filters",
+      "最多选择 200 个插件，筛选内容不能过长。": "Select up to 200 plugins; the filter must fit the size limit.",
+      "后端未应用插件筛选，请同时更新插件和独立后端。": "Plugin filters were not applied. Update both the plugin and independent backend.",
+      "筛选只影响显示，不会停用插件或删除记录。": "Filters change the view only. They do not disable plugins or delete records.",
+      "移除筛选": "Remove filter",
+      "显示全部插件": "Show all plugins",
+      "请选择要查看的插件，或切回全部插件。": "Select plugins to view, or switch back to all plugins.",
+      "只看此插件": "Only this plugin",
+      "取消": "Cancel",
+      "同期服务内存": "Service memory change",
+      "活动尚未结束": "Activity has not ended",
+      "等待下一次采样": "Waiting for the next sample",
+      "附近采样间隔过大": "Nearby samples are too far apart",
+      "附近采样不足": "Insufficient nearby samples",
+      "邻近真实采样之间的总量变化，不是该插件独占，也不能逐行相加。": "Total change between nearby actual samples, not exclusive to this plugin. Do not sum rows.",
+      "窗口内活动": "Records in window",
+      "非插件独占": "Not plugin-exclusive"
     }
   }
 }

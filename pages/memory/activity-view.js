@@ -1,4 +1,4 @@
-import { esc, size, signedSize, stamp, duration } from "./model.js";
+import { esc, size, signedSize, stamp, duration, finite } from "./model.js";
 import { t } from "./locale.js";
 
 export const categories = {
@@ -15,12 +15,25 @@ export function recorderNote(recorder) {
 export function allocationTable(rows) {
   return rows?.length ? `<div class="table-wrap"><table><thead><tr><th>${t("分配位置")}</th><th>${t("Python 净增长")}</th></tr></thead><tbody>${rows.map(r => `<tr><td class="mono">${esc(r.file)}:${esc(r.line)}</td><td class="mono">${signedSize(r.bytes)}</td></tr>`).join("")}</tbody></table></div>` : "";
 }
-export function activityList(items, { analysis = true, recorder = null } = {}) {
+function activityMemory(value) {
+  if (!value?.available) {
+    const reason = {unfinished:"未收到结束", pending_sample:"等待下一次采样", distant_samples:"附近采样间隔过大", missing_samples:"附近采样不足"}[value?.reason] || "附近采样不足";
+    return `<div class="activity-memory unavailable"><small>${t("同期服务内存")}</small><strong class="mono">—</strong><span>${t(reason)}</span></div>`;
+  }
+  const delta = value.deltas.current;
+  const tone = finite(delta) ? delta > 0 ? "increase" : delta < 0 ? "decrease" : "steady" : "steady";
+  return `<div class="activity-memory" data-delta="${tone}"><div class="activity-memory-main"><small>${t("同期服务内存")}</small><strong class="mono">${signedSize(delta)}</strong></div>
+    <div class="activity-memory-parts"><span>${t("匿名驻留")} <b class="mono">${signedSize(value.deltas.anon)}</b></span><span>Swap <b class="mono">${signedSize(value.deltas.swap)}</b></span></div>
+    <div class="activity-window mono" title="${esc(t("邻近真实采样之间的总量变化，不是该插件独占，也不能逐行相加。"))}">${stamp(value.actual[0])} → ${stamp(value.actual[1])} · ${duration(value.seconds * 1000)}<br>${t("窗口内活动")} ${esc(value.activity_count)} · ${t("非插件独占")}</div></div>`;
+}
+export function activityList(items, { analysis = true, recorder = null, quickFilter = false, memory = false } = {}) {
   if (!items?.length) return `<div class="empty"><h2>${t("这个范围没有活动记录")}</h2><p>${t("没有记录不等于没有活动；可能尚未接入、被限流，或记录已过保留期限。")}</p></div>`;
   return `<div class="activity-list">${items.map(item => {
     const unclosed = item.status === "running" && (!recorder?.enabled || Date.now()/1000 - recorder.received_at > 90 || Date.now()/1000 - item.start > 1800);
     const status = unclosed ? "expired" : item.status;
-    return `<article class="activity-item" data-category="${esc(item.category)}"><div class="activity-time mono">${stamp(item.start, true)}<small>${item.end ? stamp(item.end) : "—"}</small></div><div class="activity-body"><div class="activity-heading"><strong>${esc(item.plugin || "AstrBot")}</strong><span class="tag neutral">${t(categories[item.category] || "未知")}</span></div><div class="activity-operation mono">${esc(item.operation)}</div>${allocationTable(item.allocations)}</div><div class="activity-meta"><span class="tag ${status === "error" ? "bad" : "neutral"}">${t(states[status] || "未知")}</span><small class="mono">${item.end ? duration(item.duration_ms) : "—"}</small>${analysis ? `<button class="text-button" data-growth-start="${item.start - 15}" data-growth-end="${Math.min(item.end || item.start + 30, item.start + 86350) + 15}">${t("查看同期内存")} ↗</button>` : ""}</div></article>`;
+    const growthStart = item.memory_window?.available ? item.memory_window.actual[0] : item.start - 15;
+    const growthEnd = item.memory_window?.available ? item.memory_window.actual[1] : Math.min(item.end || item.start + 30, item.start + 86350) + 15;
+    return `<article class="activity-item" data-category="${esc(item.category)}" data-memory="${memory}"><div class="activity-time mono">${stamp(item.start, true)}<small>${item.end ? stamp(item.end) : "—"}</small></div><div class="activity-body"><div class="activity-heading"><strong>${esc(item.plugin || "AstrBot")}</strong><span class="tag neutral">${t(categories[item.category] || "未知")}</span></div><div class="activity-operation mono">${esc(item.operation)}</div>${allocationTable(item.allocations)}${quickFilter && item.plugin ? `<button class="text-button activity-only" data-activity-only="${esc(item.plugin)}">${t("只看此插件")}</button>` : ""}</div>${memory ? activityMemory(item.memory_window) : ""}<div class="activity-meta"><span class="tag ${status === "error" ? "bad" : "neutral"}">${t(states[status] || "未知")}</span><small class="mono">${item.end ? duration(item.duration_ms) : "—"}</small>${analysis ? `<button class="text-button" data-growth-start="${growthStart}" data-growth-end="${growthEnd}">${t("查看同期内存")} ↗</button>` : ""}</div></article>`;
   }).join("")}</div>`;
 }
 export function growthView(report) {

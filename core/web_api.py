@@ -8,6 +8,7 @@ handler is read-only except the explicit census/audit/baseline/GC actions.
 from __future__ import annotations
 
 import inspect
+import json
 import time
 from collections.abc import Callable
 from typing import Any
@@ -430,11 +431,51 @@ class MemoryScopeWebApi:
         if not isinstance(value, dict):
             return {}
         choices = {"theme": {"paper", "midnight", "plum"}, "locale": {"zh-CN", "en-US"}}
-        return {
+        result = {
             key: val
             for key, val in value.items()
             if key in choices and isinstance(val, str) and val in choices[key]
         }
+        raw = value.get("activity_filters")
+        if isinstance(raw, str) and len(raw.encode("utf-8")) <= 12000:
+            try:
+                filters = json.loads(raw)
+                valid = (
+                    isinstance(filters, dict)
+                    and filters.get("mode") in ("all", "include", "exclude")
+                    and isinstance(filters.get("plugins"), list)
+                    and len(filters["plugins"]) <= 200
+                    and all(
+                        isinstance(p, str) and 0 < len(p) <= 120
+                        for p in filters["plugins"]
+                    )
+                    and filters.get("range") in (900, 3600, 21600, 86400)
+                    and filters.get("category")
+                    in (
+                        "",
+                        "handler",
+                        "llm",
+                        "tool",
+                        "lifecycle",
+                        "diagnostic",
+                        "trace",
+                        "process",
+                    )
+                )
+                if valid:
+                    result["activity_filters"] = json.dumps(
+                        {
+                            "mode": filters["mode"],
+                            "plugins": list(dict.fromkeys(filters["plugins"])),
+                            "range": filters["range"],
+                            "category": filters["category"],
+                        },
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    )
+            except (ValueError, TypeError):
+                pass  # Invalid or legacy preference: retain safe theme/locale only.
+        return result
 
     async def get_preferences(self) -> Any:
         value = (
@@ -447,6 +488,10 @@ class MemoryScopeWebApi:
     async def post_preferences(self) -> Any:
         value = self._clean_preferences(await _body())
         if self.preference_store:
+            previous = self._clean_preferences(
+                await self.preference_store.get_kv_data(self._preference_key(), {})
+            )
+            value = {**previous, **value}
             await self.preference_store.put_kv_data(self._preference_key(), value)
         return ok(value)
 

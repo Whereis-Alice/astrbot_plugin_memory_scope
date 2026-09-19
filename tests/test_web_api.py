@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from types import SimpleNamespace
 from typing import Any
 
@@ -518,3 +519,48 @@ def test_disabled_reference_scan_reports_reason_without_running(api):
     result = run(instance.post_deep())
     assert result["status_code"] == 400
     assert not collector.report_calls
+
+
+def test_activity_filter_preferences_are_bounded_and_round_trip(api):
+    class KV:
+        def __init__(self):
+            self.data = {}
+
+        async def get_kv_data(self, key, default):
+            return self.data.get(key, default)
+
+        async def put_kv_data(self, key, value):
+            self.data[key] = value
+
+    value = {
+        "mode": "exclude",
+        "plugins": ["noisy", "noisy", "other"],
+        "range": 900,
+        "category": "handler",
+        "token": "do-not-store",
+    }
+    instance = api(
+        StubCollector(),
+        FakeRequest(body={"theme": "plum", "activity_filters": json.dumps(value)}),
+    )
+    instance.preference_store = KV()
+    result = data_of(run(instance.post_preferences()))
+    restored = data_of(run(instance.get_preferences()))
+    assert restored == result
+    assert json.loads(result["activity_filters"]) == {
+        "mode": "exclude",
+        "plugins": ["noisy", "other"],
+        "range": 900,
+        "category": "handler",
+    }
+    assert "do-not-store" not in str(instance.preference_store.data)
+    for bad in [
+        "bad",
+        json.dumps(dict(value, plugins=["a"] * 201)),
+        json.dumps(dict(value, category=[])),
+        json.dumps(dict(value, range="900")),
+    ]:
+        assert (
+            web_api.MemoryScopeWebApi._clean_preferences({"activity_filters": bad})
+            == {}
+        )

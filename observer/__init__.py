@@ -1,3 +1,3 @@
 """MemoryScope observer: standalone, standard-library-only Linux service."""
 
-__version__ = "4.2.0"
+__version__ = "4.2.1"

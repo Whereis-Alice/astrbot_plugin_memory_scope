@@ -11,7 +11,7 @@ import pytest
 
 from core.activity_recorder import ActivityRecorder
 from core.allocation_trace import AllocationTrace
-from observer.activity import clean_record
+from observer.activity import clean_plugin_filter, clean_record
 from observer.config import Config
 from observer.runtime import Observer
 from observer.store import Store
@@ -357,12 +357,27 @@ def test_http_activity_authentication_and_interval_validation(tmp_path):
                 return json.load(response)["data"]
 
         assert get("/api/activities?id=r")["items"][0]["id"] == "api"
+        from urllib.parse import urlencode
+
+        result = get(
+            "/api/activities?"
+            + urlencode(
+                {
+                    "id": "r",
+                    "plugin_filter": json.dumps(
+                        {"mode": "exclude", "plugins": ["astrbot_plugin_test"]}
+                    ),
+                }
+            )
+        )
+        assert not result["items"] and result["plugin_filter"]["mode"] == "exclude"
         assert not get("/api/growth?id=r&since=1&until=20")["available"]
         for path in (
             "/api/growth?id=r&since=nan&until=20",
             "/api/growth?id=r&since=0&until=90000",
             "/api/activities?id=r&category=unknown",
             "/api/activities?id=r&limit=no",
+            "/api/activities?id=r&plugin_filter=oops",
         ):
             with pytest.raises(HTTPError) as error:
                 get(path)
@@ -371,3 +386,132 @@ def test_http_activity_authentication_and_interval_validation(tmp_path):
         server.shutdown()
         server.server_close()
         observer.close()
+
+
+def test_plugin_filter_precedes_pagination_and_does_not_delete_records(tmp_path):
+    store = Store(tmp_path / "history.db")
+    store.save_activities(
+        "r",
+        [
+            dict(record(str(i), 100 + i), plugin="quiet" if i < 60 else "noisy")
+            for i in range(150)
+        ],
+    )
+    store.save_activities("other", [dict(record("other", 500), plugin="quiet")])
+    excluded = {"mode": "exclude", "plugins": ["noisy"]}
+    page = store.activities("r", plugin_filter=excluded, limit=50)
+    assert len(page["items"]) == 50 and all(
+        r["plugin"] == "quiet" for r in page["items"]
+    )
+    next_page = store.activities(
+        "r", plugin_filter=excluded, before=page["next_cursor"], limit=50
+    )
+    assert len(next_page["items"]) == 10 and next_page["next_cursor"] is None
+    assert (
+        store.activities("r", plugin_filter={"mode": "include", "plugins": []})["items"]
+        == []
+    )
+    assert (
+        len(
+            store.activities("r", plugin_filter={"mode": "exclude", "plugins": []})[
+                "items"
+            ]
+        )
+        == 50
+    )
+    assert (
+        len(
+            store.activities(
+                "r",
+                plugin_filter={"mode": "include", "plugins": ["noisy", "quiet"]},
+                limit=200,
+            )["items"]
+        )
+        == 150
+    )
+    assert (
+        store.activities(
+            "r", plugin_filter={"mode": "include", "plugins": ["' OR 1=1 --"]}
+        )["items"]
+        == []
+    )
+    assert store.activity_plugins("r") == ["noisy", "quiet"]
+    assert store.db.execute("SELECT count(*) FROM activities").fetchone()[0] == 151
+    store.close()
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "bad",
+        [],
+        {"mode": []},
+        {"mode": "invalid", "plugins": []},
+        {"mode": "include", "plugins": [None]},
+        {"mode": "exclude", "plugins": ["a"] * 201},
+        {"mode": "exclude", "plugins": ["a" * 121]},
+        {"mode": "include", "plugins": ["字" * 100 + str(i) for i in range(100)]},
+    ],
+)
+def test_plugin_filter_bounds(value):
+    with pytest.raises(ValueError):
+        clean_plugin_filter(value)
+
+
+def test_activity_memory_uses_neighbouring_samples_and_counts_unfiltered_activity(
+    tmp_path,
+):
+    store = Store(tmp_path / "history.db")
+    for ts, value in [(10, 1000), (15, 1500), (20, 1200)]:
+        store.append(
+            "samples",
+            "r",
+            {"ts": ts, "memory": {"current": value, "anon": value // 2, "swap": None}},
+        )
+    items = [
+        dict(record("short", 11), end=11.0001, plugin="visible"),
+        dict(record("noise", 13), plugin="excluded"),
+        dict(record("fall", 16), end=17, plugin="visible"),
+    ]
+    store.save_activities("r", items)
+    store.activity_memory("r", items)
+    a = items[0]["memory_window"]
+    assert a["available"] and a["actual"] == [10, 15] and a["seconds"] == 5
+    assert a["deltas"] == {"current": 500, "anon": 250, "swap": None}
+    assert a["activity_count"] == 2 and a["causal"] is False
+    assert items[2]["memory_window"]["deltas"]["current"] == -300
+    # All tiny callbacks sharing a pair reuse one compact result, not a process tree.
+    assert items[0]["memory_window"] is items[1]["memory_window"]
+    filtered = store.activities(
+        "r", plugin_filter={"mode": "exclude", "plugins": ["excluded"]}
+    )["items"]
+    store.activity_memory("r", filtered)
+    assert (
+        next(r for r in filtered if r["id"] == "short")["memory_window"][
+            "activity_count"
+        ]
+        == 2
+    )
+    missing = [
+        dict(record("missing", 100), end=101),
+        dict(record("running", 11), end=None),
+        record("gap", -100),
+    ]
+    store.activity_memory("r", missing)
+    assert all(not row["memory_window"]["available"] for row in missing)
+    store.activity_memory("another-run", items)
+    assert all(not row["memory_window"]["available"] for row in items)
+    store.close()
+
+
+def test_activity_memory_waits_for_next_sample_and_rejects_distant_pairs(tmp_path):
+    store = Store(tmp_path / "history.db")
+    now = time.time()
+    store.append("samples", "r", {"ts": now - 1, "memory": {"current": 100}})
+    rows = [dict(record("recent", now - 0.5), end=now - 0.1)]
+    store.activity_memory("r", rows)
+    assert rows[0]["memory_window"]["reason"] == "pending_sample"
+    store.append("samples", "r", {"ts": now + 50, "memory": {"current": 200}})
+    store.activity_memory("r", rows)
+    assert rows[0]["memory_window"]["reason"] == "distant_samples"
+    store.close()

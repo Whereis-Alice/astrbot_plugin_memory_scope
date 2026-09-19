@@ -65,6 +65,10 @@ def make_server(observer, assets: Path | None = None):
                         "activity-view.js",
                         "text/javascript; charset=utf-8",
                     ),
+                    "/activity-filter.js": (
+                        "activity-filter.js",
+                        "text/javascript; charset=utf-8",
+                    ),
                     "/locale.js": ("locale.js", "text/javascript; charset=utf-8"),
                     "/style.css": ("style.css", "text/css; charset=utf-8"),
                 }
@@ -159,6 +163,7 @@ def make_server(observer, assets: Path | None = None):
                             before=before,
                             category=category,
                             plugin=query.get("plugin", [""])[0][:120],
+                            plugin_filter=query.get("plugin_filter", [None])[0],
                             limit=int(query.get("limit", ["50"])[0]),
                         )
                 elif url.path == "/api/diagnostics":

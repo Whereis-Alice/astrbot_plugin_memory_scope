@@ -56,6 +56,7 @@ class ObserverApi:
                                 "until",
                                 "before",
                                 "plugin",
+                                "plugin_filter",
                                 "category",
                                 "limit",
                             }

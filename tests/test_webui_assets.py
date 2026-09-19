@@ -46,7 +46,7 @@ def test_translation_bundles_match_shared_application():
     assert en["pages"]["memory"] == {k: v[1] for k, v in messages.items()}
     assert all(not re.search(r"[\u4e00-\u9fff]", v[1]) for v in messages.values())
     keys = set(re.findall(r'data-t="([^"]+)"', HTML))
-    for name in ("app.js", "chart.js", "activity-view.js"):
+    for name in ("app.js", "chart.js", "activity-view.js", "activity-filter.js"):
         source = (ASSETS / name).read_text(encoding="utf-8")
         keys.update(re.findall(r'\bt\("([^"\n]+)"\)', source))
         # Includes labels passed indirectly through navigation and guide models.

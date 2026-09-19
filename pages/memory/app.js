@@ -11,6 +11,7 @@ import {
   sortedRows,
 } from "./model.js";
 import { TrendChart } from "./chart.js";
+import { ActivityPluginFilter, cleanActivityFilters } from "./activity-filter.js";
 import { categories, evidenceNote, recorderNote, activityList, growthView, allocationTable } from "./activity-view.js";
 import { t, setLocale } from "./locale.js";
 const $ = (id) => document.getElementById(id);
@@ -31,7 +32,7 @@ const S = {
   activityRun: "",
   activityAnchor: null,
   activityCategory: "",
-  activityPlugin: "",
+  activityPluginFilter: { mode: "all", plugins: [] },
   activityCursors: [null],
   activityError: "",
   trace: {state: "idle"},
@@ -883,18 +884,53 @@ async function scan(name) {
 }
 
 let activityRequest = 0;
+let activityPicker;
+function activityFilters() {
+  return { ...S.activityPluginFilter, range: S.activityRange, category: S.activityCategory };
+}
+function restoreActivityFilters() {
+  const value = cleanActivityFilters(saved("activity_filters", ""));
+  S.activityPluginFilter = { mode: value.mode, plugins: value.plugins };
+  S.activityRange = value.range;
+  S.activityCategory = value.category;
+}
+function activityPluginOptions() {
+  const run = S.runs.find(r => r.id === S.activityRun) || S.overview?.run;
+  const options = new Map(["AstrBot", "AstrBot/MCP"].map(id => [id, { id, label: id }]));
+  for (const p of run?.inventory || []) {
+    const id = p.root_dir_name || p.name;
+    if (id) options.set(id, { id, label: p.display_name || p.name || id });
+  }
+  for (const id of [...(S.activities?.plugin_options || []), ...S.activityPluginFilter.plugins])
+    if (!options.has(id)) options.set(id, { id, label: id });
+  return [...options.values()];
+}
+function applyActivityPlugins(value) {
+  S.activityPluginFilter = { mode: value.mode, plugins: [...value.plugins] };
+  saveActivityFilters();
+}
+function saveActivityFilters() {
+  save("activity_filters", JSON.stringify(activityFilters()));
+  S.activityCursors = [null];
+  S.activities = null;
+  S.activityError = "";
+  if (S.tab === "activity") renderActivities(false);
+  loadActivities();
+}
 async function loadActivities() {
   if (S.mode !== "observer" || !S.overview?.run?.id) return;
   const request = ++activityRequest;
   const run = S.runs.find(r => r.id === S.activityRun) || S.overview.run;
   if (S.activityCursors.length === 1) S.activityAnchor = run.ended_at || Date.now()/1000;
   const params = { id: run.id, since: Math.max(0, S.activityAnchor - S.activityRange), until: S.activityAnchor,
-    category: S.activityCategory, plugin: S.activityPlugin, limit: 50 };
+    category: S.activityCategory, plugin_filter: JSON.stringify(S.activityPluginFilter), limit: 50 };
   const cursor = S.activityCursors.at(-1);
   if (cursor) params.before = cursor;
   try {
     const result = await api("activities", params);
     if (request !== activityRequest) return;
+    if (S.activityPluginFilter.mode !== "all" && JSON.stringify(result.plugin_filter) !== params.plugin_filter)
+      throw new Error(t("后端未应用插件筛选，请同时更新插件和独立后端。"));
     S.activities = result;
     S.activityError = "";
     if (embedded) {
@@ -913,27 +949,34 @@ function renderActivities(build) {
     return;
   }
   if (build || !$("activity-results")) {
-    const plugins = (S.runs.find(r => r.id === S.activityRun) || S.overview.run)?.inventory || [];
     $("content").innerHTML = `<section class="card activity-card">${cardHead(t("最近活动"), t("仅记录功能元数据 · 自动保存 · 与趋势时间对齐"))}
       <div class="activity-filters">
       <label>${t("启动批次")}<select id="activity-run"><option value="">${t("当前")}</option>${S.runs.filter(r=>r.id!==S.overview.run?.id).map(r=>`<option value="${esc(r.id)}" ${r.id===S.activityRun?"selected":""}>${esc(stamp(r.started_at,true))} · PID ${esc(r.pid)}</option>`).join("")}</select></label>
       <label>${t("时间范围")}<select id="activity-range">${[[900,"15m"],[3600,"1h"],[21600,"6h"],[86400,"24h"]].map(([v,l]) => `<option value="${v}" ${S.activityRange===v?"selected":""}>${l}</option>`).join("")}</select></label>
       <label>${t("活动类型")}<select id="activity-category"><option value="">${t("全部类型")}</option>${Object.entries(categories).map(([v,l])=>`<option value="${v}" ${S.activityCategory===v?"selected":""}>${t(l)}</option>`).join("")}</select></label>
-      <label>${t("插件")}<select id="activity-plugin"><option value="">${t("全部插件")}</option><option value="AstrBot" ${S.activityPlugin==="AstrBot"?"selected":""}>AstrBot</option><option value="AstrBot/MCP" ${S.activityPlugin==="AstrBot/MCP"?"selected":""}>AstrBot/MCP</option>${plugins.map(p => `<option value="${esc(p.root_dir_name || p.name)}" ${S.activityPlugin===(p.root_dir_name||p.name)?"selected":""}>${esc(p.display_name || p.name)}</option>`).join("")}</select></label>
-      </div><div class="card-body">${evidenceNote()}<div id="recorder-state"></div></div><div id="activity-results"></div><div id="activity-pager" class="activity-pager"></div></section>
+      <div id="activity-plugin-filter" class="activity-plugin-filter"></div>
+      </div><div id="activity-filter-summary" class="activity-filter-summary" aria-live="polite"></div><div class="card-body">${evidenceNote()}<div id="recorder-state"></div></div><div id="activity-results"></div><div id="activity-pager" class="activity-pager"></div></section>
       <section class="card section-gap">${cardHead(t("限时分配追踪"), t("默认关闭 · 手动开启 · 到时退出"))}<div class="card-body"><p class="data-note">${t("仅追踪开启后的 Python 分配位置，不是插件独占内存，也不覆盖所有原生库。会增加 CPU 和内存开销；限时 30 秒，追踪器记账超过 16 MiB 时提前退出。内存检查不是硬性进程内存上限。")}</p><div id="trace-controls"></div></div></section>`;
-    for (const [id, key] of [["activity-run", "activityRun"], ["activity-range", "activityRange"], ["activity-category", "activityCategory"], ["activity-plugin", "activityPlugin"]]) {
+    activityPicker = new ActivityPluginFilter($("activity-plugin-filter"), {
+      getValue: activityFilters, getOptions: activityPluginOptions,
+      onApply: applyActivityPlugins, onError: toast,
+    });
+    for (const [id, key] of [["activity-run", "activityRun"], ["activity-range", "activityRange"], ["activity-category", "activityCategory"]]) {
       $(id).onchange = e => {
         S[key] = id === "activity-range" ? Number(e.target.value) : e.target.value;
         S.activityCursors = [null];
-        if (id === "activity-run") { S.activityPlugin = ""; S.activities = null; renderActivities(true); }
-        loadActivities();
+        if (id === "activity-run") { S.activities = null; renderActivities(true); loadActivities(); }
+        else saveActivityFilters();
       };
     }
   }
+  activityPicker?.update();
+  const filter = S.activityPluginFilter;
+  const options = new Map(activityPluginOptions().map(row => [row.id, row.label]));
+  $("activity-filter-summary").innerHTML = `<span class="muted">${t("筛选只影响显示，不会停用插件或删除记录。")}</span>${filter.mode !== "all" ? `<div class="active-plugin-filters"><strong>${t(filter.mode === "include" ? "只看所选" : "排除所选")}</strong>${filter.plugins.map(id=>`<button class="filter-chip" data-remove-activity-plugin="${esc(id)}" aria-label="${esc(t("移除筛选") + ': ' + (options.get(id)||id))}">${esc(options.get(id)||id)} <span aria-hidden="true">×</span></button>`).join("")}<button class="text-button" data-clear-activity-plugins>${t("显示全部插件")}</button></div>` : ""}${filter.mode === "include" && !filter.plugins.length ? `<p class="data-note">${t("请选择要查看的插件，或切回全部插件。")}</p>` : ""}`;
   $("recorder-state").innerHTML = recorderNote(S.activities?.recorder);
   $("activity-results").innerHTML = S.activityError ? empty(t("活动记录读取失败"), S.activityError + " · " + t("请确认插件与独立后端都已更新。")) :
-    S.activities ? activityList(S.activities.items, {recorder: S.activities.recorder}) : empty(t("正在读取记录"));
+    S.activities ? activityList(S.activities.items, {recorder: S.activities.recorder, quickFilter: true, memory: true}) : empty(t("正在读取记录"));
   $("activity-pager").innerHTML = `<button id="activity-prev" ${S.activityCursors.length===1?"disabled":""}>${t("上一页")}</button><span class="muted">${S.activityCursors.length===1?t("最新记录自动刷新"):t("浏览历史时暂停翻页刷新")}</span><button id="activity-next" ${S.activities?.next_cursor?"":"disabled"}>${t("更早记录")}</button>`;
   $("activity-prev").onclick = () => { S.activityCursors.pop(); loadActivities(); };
   $("activity-next").onclick = () => { S.activityCursors.push(S.activities.next_cursor); loadActivities(); };
@@ -1167,6 +1210,12 @@ document.addEventListener("click", async (e) => {
   const button = e.target.closest("button");
   if (!button) return;
   if (button.dataset.go) navigate(button.dataset.go);
+  if (button.dataset.activityOnly) applyActivityPlugins({mode:"include", plugins:[button.dataset.activityOnly]});
+  if (button.hasAttribute("data-clear-activity-plugins")) applyActivityPlugins({mode:"all",plugins:[]});
+  if (button.dataset.removeActivityPlugin) {
+    const plugins = S.activityPluginFilter.plugins.filter(id=>id!==button.dataset.removeActivityPlugin);
+    applyActivityPlugins({mode: plugins.length ? S.activityPluginFilter.mode : "all", plugins});
+  }
   if (button.dataset.growthStart) openGrowth(Number(button.dataset.growthStart), Number(button.dataset.growthEnd), S.activities?.run_id);
   if (button.dataset.plugin) openDetail(button.dataset.plugin);
   if (button.dataset.historyPlugin)
@@ -1307,6 +1356,7 @@ $("auth").onsubmit = async (e) => {
   }
 };
 async function boot() {
+  restoreActivityFilters();
   theme(saved("theme", "paper"));
   setLocale(saved("locale", "zh-CN"));
   $("locale").value = document.documentElement.lang;
@@ -1330,6 +1380,7 @@ async function boot() {
     const context = bridge.getContext?.() || {};
     try {
       Object.assign(preferences, await api("preferences", {}, "GET", true));
+      restoreActivityFilters();
     } catch {
       /* Older plugin bridge: keep session preferences. */
     }

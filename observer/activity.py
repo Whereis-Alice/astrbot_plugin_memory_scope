@@ -2,12 +2,43 @@
 
 from __future__ import annotations
 
+import json
 import math
 import re
 from itertools import pairwise
 
 CATEGORIES = {"handler", "llm", "tool", "lifecycle", "diagnostic", "trace", "process"}
 STATUSES = {"running", "ok", "error", "cancelled", "expired"}
+
+
+def clean_plugin_filter(value=None):
+    """Bound a client-side preference before using it in parameterized SQL."""
+    if value is None:
+        return {"mode": "all", "plugins": []}
+    if isinstance(value, str):
+        if len(value.encode("utf-8")) > 12000:
+            raise ValueError("Plugin filter is too large")
+        try:
+            value = json.loads(value)
+        except (ValueError, TypeError):
+            raise ValueError("Invalid plugin filter") from None
+    if not isinstance(value, dict) or value.get("mode") not in (
+        "all",
+        "include",
+        "exclude",
+    ):
+        raise ValueError("Invalid plugin filter mode")
+    plugins = value.get("plugins")
+    if (
+        not isinstance(plugins, list)
+        or len(plugins) > 200
+        or any(not isinstance(p, str) or not p or len(p) > 120 for p in plugins)
+    ):
+        raise ValueError("Choose at most 200 valid plugin identifiers")
+    result = {"mode": value["mode"], "plugins": list(dict.fromkeys(plugins))}
+    if len(json.dumps(result, ensure_ascii=False).encode("utf-8")) > 12000:
+        raise ValueError("Plugin filter is too large")
+    return result
 
 
 def number(value):

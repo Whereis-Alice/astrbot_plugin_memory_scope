@@ -316,6 +316,7 @@ def test_embedded_activity_trace_is_never_automatically_started(preview):
 def mount_bridge(page, url, token, status=None, extra=None):
     assets = Path(__file__).resolve().parents[1] / "pages/memory"
     calls = []
+    preferences = dict((extra or {}).get("preferences", {}))
 
     def route_static(route):
         name = route.request.url.rsplit("/", 1)[-1]
@@ -324,6 +325,7 @@ def mount_bridge(page, url, token, status=None, extra=None):
             "app.js",
             "model.js",
             "activity-view.js",
+            "activity-filter.js",
             "chart.js",
             "locale.js",
             "style.css",
@@ -353,7 +355,9 @@ def mount_bridge(page, url, token, status=None, extra=None):
 
         calls.append((name, params, method))
         if name == "preferences":
-            return {}
+            if method == "POST":
+                preferences.update(params)
+            return dict(preferences)
         if name == "observer_status":
             return {
                 "status": "ok",
@@ -621,4 +625,100 @@ def test_theme_menu_keyboard_readability_and_persistence(preview, width, height)
         trigger.click()
         assert "Afterglow" in menu.inner_text()
         assert not re.search(r"[\u4e00-\u9fff]", menu.inner_text())
+        browser.close()
+
+
+@pytest.mark.parametrize("embedded,width", [(False,1440),(False,390),(True,1440)])
+def test_remember_activity_exclusions_and_dense_memory_rows(preview, embedded, width):
+    import json
+    url,token,observer=preview
+    now=time.time()
+    run=observer.current_run
+    run["inventory"].extend([
+        {"root_dir_name":"noisy","name":"noisy","display_name":"高频提醒"},
+        {"root_dir_name":"quiet","name":"quiet","display_name":"图片制作"},
+    ] + [{"root_dir_name":f"extra_{i}","name":f"extra_{i}","display_name":f"插件 {i}"} for i in range(80)])
+    observer.store.save_run(run)
+    observer.store.save_activities(run["id"],[
+        {"id":f"filter-{i}","start":now-120+i*.02,"end":now-120+i*.02+.0001,
+         "plugin":"quiet" if i<65 else "noisy", "category":"handler", "operation":f"work_{i}","status":"ok","duration_ms":.1}
+        for i in range(145)
+    ])
+    with playwright.sync_playwright() as pw:
+        browser=pw.chromium.launch(headless=True)
+        page=browser.new_page(viewport={"width":width,"height":1000 if width>600 else 844})
+        errors=[]
+        page.on("pageerror",lambda e:errors.append(str(e)))
+        if embedded:
+            calls=mount_bridge(page,url,token,extra={"trace_status":{"state":"idle"}})
+            page.add_init_script("Object.defineProperty(window,'localStorage',{get(){throw new Error('storage denied')}})")
+            entry=url+"/plugin/index.html#activity"
+        else:
+            entry=url+"/#activity"
+        def login():
+            if not embedded:
+                page.get_by_label("后端访问凭据").fill(token)
+                page.get_by_role("button",name="连接",exact=True).click()
+            page.locator("#activity-results .activity-item").first.wait_for()
+        page.goto(entry)
+        login()
+        assert "noisy" in page.locator("#activity-results").inner_text()
+        assert "非插件独占" in page.locator("#activity-results").inner_text()
+        summary=page.locator(".plugin-filter-picker > summary")
+        summary.click()
+        page.get_by_role("radio",name="排除所选",exact=True).check()
+        page.get_by_label("搜索插件名称或 ID",exact=True).fill("高频")
+        page.locator('[data-filter-plugin="noisy"]').check()
+        for theme in ("paper","midnight","plum"):
+            # Set theme for deterministic screenshots without dismissing the draft.
+            page.evaluate("theme=>document.documentElement.dataset.scopeTheme=theme",theme)
+            snapshot(page,f"activity-filter-{theme}-{width}-{'embedded' if embedded else 'standalone'}")
+        page.get_by_role("button",name="应用筛选",exact=True).click()
+        playwright.expect(page.locator("#activity-results .activity-item")).to_have_count(50)
+        playwright.expect(page.locator("#activity-results .activity-heading strong").first).to_have_text("quiet")
+        assert "noisy" not in page.locator("#activity-results").inner_text()
+        assert "窗口内活动 145" in page.locator("#activity-results").inner_text()
+        page.locator("#activity-next").click()
+        playwright.expect(page.locator("#activity-results .activity-item")).to_have_count(15)
+        page.locator("#activity-range").select_option("900")
+        playwright.expect(page.locator("#activity-results .activity-item")).to_have_count(50)
+        page.locator("#activity-category").select_option("handler")
+        if embedded:
+            page.wait_for_timeout(250)
+            assert any(n=="preferences" and m=="POST" and json.loads(p.get("activity_filters","{}" )).get("plugins")==["noisy"] for n,p,m in calls)
+        page.reload()
+        login()
+        playwright.expect(summary).to_contain_text("排除所选 · 1")
+        assert page.locator("#activity-range").input_value()=="900"
+        assert page.locator("#activity-category").input_value()=="handler"
+        assert "noisy" not in page.locator("#activity-results").inner_text()
+        page.get_by_role("button",name="只看此插件",exact=True).first.click()
+        playwright.expect(summary).to_contain_text("只看所选 · 1")
+        playwright.expect(page.locator("#activity-results .activity-item")).to_have_count(50)
+        # Draft cancellation must not mutate applied/saved filter.
+        summary.click()
+        page.get_by_role("radio",name="全部插件",exact=True).check()
+        page.get_by_role("button",name="取消",exact=True).click()
+        playwright.expect(summary).to_contain_text("只看所选 · 1")
+        page.get_by_role("button",name="显示全部插件",exact=True).click()
+        playwright.expect(summary).to_have_text("全部插件⌄")
+        playwright.expect(page.locator("#activity-results .activity-heading strong").first).to_have_text("noisy")
+        snapshot(page,f"activity-memory-{width}-{'embedded' if embedded else 'standalone'}")
+        assert not errors,errors
+        browser.close()
+
+
+def test_old_backend_does_not_silently_ignore_active_filter(preview):
+    import json
+    url,token,_=preview
+    with playwright.sync_playwright() as pw:
+        browser=pw.chromium.launch(headless=True)
+        page=browser.new_page()
+        page.add_init_script("localStorage.setItem('memoryscope.activity_filters',JSON.stringify({mode:'exclude',plugins:['noisy'],range:3600,category:''}))")
+        page.route("**/api/activities?**",lambda route:route.fulfill(content_type="application/json",body=json.dumps({"status":"ok","data":{"items":[],"recorder":None}})))
+        page.goto(url+"/#activity")
+        page.get_by_label("后端访问凭据").fill(token)
+        page.get_by_role("button",name="连接",exact=True).click()
+        page.get_by_role("heading",name="活动记录读取失败",exact=True).wait_for()
+        assert "后端未应用插件筛选" in page.locator("#activity-results").inner_text()
         browser.close()
